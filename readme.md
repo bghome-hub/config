@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Gorillas Game with Building Damage and Banana Image</title>
+  <title>Gorillas Game with Building Damage and Banana Shape</title>
   <style>
     body { margin: 0; overflow: hidden; background-color: skyblue; }
     canvas { display: block; background-color: lightblue; }
@@ -75,10 +75,6 @@
     var banana = null;
     var gameOver = false;
 
-    // Load banana image
-    var bananaImg = new Image();
-    bananaImg.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAFIklEQVR4Xu3bUYhVZRzH8c+3usViAAqNqqoIUKAKkFopYSqAjBRQVUIFBK1IlKhUKIigIgiiIvoIDKULRS6qC+IVFAKCJaD0oFoYmARVUJKRKlCKGJVq1Vaa5Jr9/S2zd3a3fOnc3dnZ2e3ee++53Pvznf6vXbX3dZlHy+z8Pj43+99zgz+EH81vUGR0QHhmpHVB0eQdR0QHR2QSx8KjIXMNYzeb8kPiqU5qB3ZMH/dx9H15FzwV9qHHEF3uU4Zsyi4JbdmY1IPrBOPCOjGOf2I6FHRZd9BrnCq/QJ6xjkxDdNV/rzDGZep6iXwvWNRnFpdj+avRGtfQUzq8Yo3quk6Me6rPIWt9BTNauV+An6hxcPV0xz/vA8oZ6xqX4afgBTjr1VOYftj/6bPHl9Ba0x6sqnxF/AtOj3g/PbXkdearYPF1PXjTv/TKjGmSivx20bop6u6R+H1NVEeHUoIYc5Sqa9N3j9KX0Gv+14v/hTrG+s56v3NL9ZzGeXPok+udRnN6mowqdwilfOqzlbfotfb9mEoDzmbTUpJHvjUrVq1bq7+7jm9fVHVY2S3h2WV9ANwDGxO8IPVu0P3kVejGzOdkf0nfJRR/7kZr8mDoAjHV+XMSqJswg48lLnsab6E22Y5ewSPpWdw6izSqt6Az0HEj/DNOvzR9Aa3fjpZJ9RnOq0POY9pDrvuR+eBZ5s8VPSxncVPTpYjggE+DAqYalclflbZrQJPG6TXmpm0GLVY3txyF+jJvaE6BpblWM6r1SfuFPdxpHsXx0ALgTdBpXYFrKFezqUHUUV1RnGpZpBsKknPTmSAJwbXBie4yjHtZ7B2zN8dmpre22U6Aj80dX8a9R1ER0d1U9t86/iqTdgy6/qIdRHh0O6QZfNzjC/N+DnLAFs74+eMcOk2jdTOhBegeabjTA79m7yN+6Vj8AEiZx1KezGvZUc6rhaxHsW4cI9ayjpV76ivx23nAPDR3m6gj+KpJ2wLYI5aAj1rJ0o++CO7JD4dpVD+d/XeHgPpGV1DdZ34qMN2PvFOv2+hxagIcX3gZ2eQzUR9HBRvbk6FehZwT0ELgjtAsbErh3d0Mc2kgLAC3wYkAXG8gFrchcFhCLABzwYkAHF84Frcl8MhlRHgYSHQBY6ym+F2CYj0mC8FxeCxcA28FrQMyA8zXB6YB2sR7CBwC++DMoT0iLADTwZkCbFoyBNjz9BEjYx2lV+0rZzHnhXIXAA2sC2iT1HR0VwF3gYODuLPqv1MfO5KjAuAptF42KC94Sry7XwNH8eNlcS4SrgIvBWtE6wnyl2sPHgZVfi8KjAXRJR0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0RlER0Rldc6P/45/AtfxnDkDAAAAABJRU5ErkJggg==';
-
     // Generate buildings
     function generateBuildings() {
       buildings = [];
@@ -96,7 +92,6 @@
 
     // Place gorillas on buildings
     function placeGorillas() {
-      var availableBuildings = buildings.slice();
       var player1Index = Math.floor(Math.random() * (NUM_BUILDINGS / 3));
       var player2Index = Math.floor(NUM_BUILDINGS * (2 / 3) + Math.random() * (NUM_BUILDINGS / 3));
 
@@ -167,9 +162,21 @@
         ctx.save();
         ctx.translate(banana.x, banana.y);
         ctx.rotate(banana.angle);
-        ctx.drawImage(bananaImg, -BANANA_WIDTH / 2, -BANANA_HEIGHT / 2, BANANA_WIDTH, BANANA_HEIGHT);
+        drawBananaShape();
         ctx.restore();
       }
+    }
+
+    function drawBananaShape() {
+      ctx.fillStyle = 'yellow';
+      ctx.beginPath();
+      ctx.moveTo(-BANANA_WIDTH / 2, 0);
+      ctx.quadraticCurveTo(0, -BANANA_HEIGHT, BANANA_WIDTH / 2, 0);
+      ctx.quadraticCurveTo(0, BANANA_HEIGHT, -BANANA_WIDTH / 2, 0);
+      ctx.fill();
+      ctx.strokeStyle = 'brown';
+      ctx.lineWidth = 2;
+      ctx.stroke();
     }
 
     function drawScene() {
@@ -330,10 +337,8 @@
       drawScene();
     });
 
-    // Start the game when the banana image is loaded
-    bananaImg.onload = function() {
-      initGame();
-    };
+    // Start the game
+    initGame();
   </script>
 </body>
 </html>
