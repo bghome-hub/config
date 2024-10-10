@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Gorillas Game with Enhanced Features</title>
+  <title>Gorillas Game with Enhanced Mechanics</title>
   <style>
     body { margin: 0; overflow: hidden; background-color: skyblue; }
     canvas { display: block; background-color: lightblue; }
@@ -73,12 +73,7 @@
     var currentPlayer = 0;
     var banana = null;
     var gameOver = false;
-    var previousInputs = [{angle: 45, velocity: 50}, {angle: 45, velocity: 50}];
-    var bananaImg = new Image();
-    bananaImg.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAOCAYAAAB/73ocAAAABmJLR0QA/wD/AP+gvaeTAAACu0lEQVRIie2WP4iVURjHP9cYq+apSqVpS+RyaZSUUkiJQaLo3aUdJYgN0NoSm4aXFQpRExFUpFIqClpUyLlUCSKcH6mFaEDf3jH1u1nZPdnZ2d3Txfw5xe86b9m37HPP8/e77/fh1yAn1A99xTwtBA4AcSBQJmgAtwA+IEbkAl8AC4BQ6AThDYqppFfXArsA1UBVYB+IQQEIzfMJ7ABsAYNwPDABYk0nIkgS3+vG0r19RpIuY11e01CH8IroP6NpoNxJAE2Qx4CbpUq+Ad9kF+xHVvS6ur4dOAh4rFBSiOhbTi0CqI1pAJxBbSNZC6qygFa3JGkrnE1kBn0tANoDYbG1aUepNimVbf1plV7R0UpFfth2eX5oB1wFp6T6i10rQvgA+CLqoWJGgSTgHdSkwMSuB+4Bh4ABi0BRSDs8VD4DY4CLgKxAWzjs1O+i68DIp1eSlZeXioc2gJXgAvAQ+APsDRYDaYRHUBj4F1gAHgOjwDC0E3hgdAygNoIZl9XN6rOXotAHx4EjIdquYAw4EroFJYV6FbeBL0K/Sr2MekFHBpMg2eARcAV0oC3gDPAS3gSeAatA1kE0hEQJEp+0qS2rgGPhvcK0uciyVgO7Aq2nY5drUrR1CjYFfgIXAM+ARcAkzF9YlvAlG1IlgFnwdfArUAV6AEYEn4J1vqc+BkLJbVp17ivA4xN1jnhIXAJeCJ+DC4A98Bt4Gj9InZgT+YRCkBd2Ar6GpJNpAY+BQeBQ+AIPBG+AH6GjYAI4CFwAfjv+31vIqQX9J8pimxBNmCCeCZucVUA5sA14B9gPPgGzgnrWPU0+it6N3vOXpl3ufCz3/ppNxVTmZXUzZzpcPrKzXDY6LBbDFgXwrsoBNISapI6nbkPG0lYwWLCoyVIn6xSot3Q0mYLF3nOfC0fIEZSMi3yUov0gfy2pGcnE/Rr69Z0ap/fif3XQyT4xqGJ4AyYnNZxZUKvFv6Tm6mK/lcJxV7wOtQwqnl/tJg6l+a1kmq7qJgAAAABJRU5ErkJggg==';
-
-    // Declare player1Building and player2Building at the global scope
-    var player1Building, player2Building;
+    var previousInputs = [{angle: 45, velocity: 50}, {angle: 45, velocity: 50}]; // Default previous inputs for both players
 
     // Generate buildings
     function generateBuildings() {
@@ -108,20 +103,16 @@
           x: buildings[player1Building].x + buildings[player1Building].width / 2,
           y: buildings[player1Building].y,
           color: 'red',
-          falling: false,
-          vy: 0
+          vy: 0 // Vertical velocity for falling
         },
         {
           x: buildings[player2Building].x + buildings[player2Building].width / 2,
           y: buildings[player2Building].y,
           color: 'blue',
-          falling: false,
-          vy: 0
+          vy: 0 // Vertical velocity for falling
         }
       ];
     }
-
-    // Rest of the code remains the same...
 
     // Draw functions
     function drawBuildings() {
@@ -131,38 +122,37 @@
         // Save context state
         ctx.save();
 
-        // Create building path
-        ctx.beginPath();
-        ctx.rect(b.x, b.y, b.width, b.height);
+        // Draw building
+        ctx.fillStyle = 'gray';
+        ctx.fillRect(b.x, b.y, b.width, b.height);
 
         // Apply holes (damage)
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = 'black';
         for (var h = 0; h < b.holes.length; h++) {
           var hole = b.holes[h];
-          ctx.save();
+          ctx.beginPath();
           ctx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
-          ctx.clip();
-        }
-
-        // Fill building with windows
-        ctx.fillStyle = 'gray';
-        ctx.fill();
-
-        // Draw windows
-        ctx.fillStyle = 'yellow';
-        for (var w = b.y + 10; w < canvas.height - 10; w += 20) {
-          for (var v = b.x + 5; v < b.x + b.width - 10; v += 20) {
-            ctx.fillRect(v, w, 10, 10);
-          }
+          ctx.fill();
         }
 
         // Restore context state
         ctx.restore();
+
+        // Draw windows as part of the building
+        ctx.save();
+        ctx.fillStyle = 'yellow';
+        ctx.beginPath();
+        for (var w = b.y + 10; w < canvas.height - 10; w += 20) {
+          for (var v = b.x + 5; v < b.x + b.width - 10; v += 20) {
+            ctx.rect(v, w, 10, 10);
+          }
+        }
+        ctx.fill();
+        ctx.restore();
       }
     }
 
-    // The rest of the code continues here...
-
-    // Draw gorillas
     function drawGorillas() {
       for (var i = 0; i < gorillas.length; i++) {
         var g = gorillas[i];
@@ -173,18 +163,28 @@
       }
     }
 
-    // Draw banana
     function drawBanana() {
       if (banana) {
         ctx.save();
         ctx.translate(banana.x, banana.y);
         ctx.rotate(banana.angle);
-        ctx.drawImage(bananaImg, -BANANA_WIDTH / 2, -BANANA_HEIGHT / 2, BANANA_WIDTH, BANANA_HEIGHT);
+        drawBananaShape();
         ctx.restore();
       }
     }
 
-    // Draw scene
+    function drawBananaShape() {
+      ctx.fillStyle = 'yellow';
+      ctx.beginPath();
+      ctx.moveTo(-BANANA_WIDTH / 2, 0);
+      ctx.quadraticCurveTo(0, -BANANA_HEIGHT, BANANA_WIDTH / 2, 0);
+      ctx.quadraticCurveTo(0, BANANA_HEIGHT, -BANANA_WIDTH / 2, 0);
+      ctx.fill();
+      ctx.strokeStyle = 'brown';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
     function drawScene() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       drawBuildings();
@@ -192,7 +192,238 @@
       drawBanana();
     }
 
-    // Game logic and other functions remain unchanged...
+    // Game logic
+    function playerTurn() {
+      if (gameOver) return;
+      // Display input overlay
+      var inputOverlay = document.getElementById('inputOverlay');
+      inputOverlay.style.display = 'flex';
+      document.getElementById('playerNumber').innerText = currentPlayer + 1;
+
+      // Pre-fill previous inputs
+      document.getElementById('angleInput').value = previousInputs[currentPlayer].angle;
+      document.getElementById('velocityInput').value = previousInputs[currentPlayer].velocity;
+    }
+
+    function startBananaThrow(angle, velocity) {
+      var angleRad = angle * Math.PI / 180;
+      var gorilla = gorillas[currentPlayer];
+      var direction = currentPlayer === 0 ? 1 : -1;
+
+      banana = {
+        x: gorilla.x,
+        y: gorilla.y - 10,
+        vx: velocity * Math.cos(angleRad) * direction,
+        vy: -velocity * Math.sin(angleRad),
+        angle: angleRad * direction
+      };
+
+      animateBanana();
+    }
+
+    function animateBanana() {
+      function update() {
+        if (!banana) return;
+
+        banana.x += banana.vx * TIME_STEP * 10;
+        banana.y += banana.vy * TIME_STEP * 10;
+        banana.vy += (GRAVITY * TIME_STEP) / 10;
+
+        // Update banana rotation
+        banana.angle += 0.1 * direction;
+
+        // Immediately draw scene after movement
+        drawScene();
+
+        if (checkCollision()) {
+          banana = null;
+          // Draw the scene immediately after collision to show damage
+          drawScene();
+          return;
+        }
+
+        if (banana.x < 0 || banana.x > canvas.width || banana.y > canvas.height) {
+          banana = null;
+          currentPlayer = 1 - currentPlayer;
+          setTimeout(playerTurn, 500);
+          return;
+        }
+
+        requestAnimationFrame(update);
+      }
+
+      var direction = currentPlayer === 0 ? 1 : -1;
+      update();
+    }
+
+    function checkCollision() {
+      // Collision with buildings
+      for (var i = 0; i < buildings.length; i++) {
+        var b = buildings[i];
+        if (
+          banana.x + BANANA_WIDTH / 2 > b.x &&
+          banana.x - BANANA_WIDTH / 2 < b.x + b.width &&
+          banana.y + BANANA_HEIGHT / 2 > b.y &&
+          banana.y - BANANA_HEIGHT / 2 < b.y + b.height
+        ) {
+          // Check if banana hits near an existing hole
+          var existingHole = null;
+          for (var h = 0; h < b.holes.length; h++) {
+            var hole = b.holes[h];
+            var dx = banana.x - hole.x;
+            var dy = banana.y - hole.y;
+            var distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance < hole.radius) {
+              existingHole = hole;
+              break;
+            }
+          }
+
+          if (existingHole) {
+            // Increase the hole radius
+            existingHole.radius += 10;
+          } else {
+            // Add a new hole to the building at the collision point
+            b.holes.push({
+              x: banana.x,
+              y: banana.y,
+              radius: 20
+            });
+          }
+
+          // Check if any gorilla is affected by the damage
+          checkGorillaSupport();
+
+          return true;
+        }
+      }
+
+      // Collision with gorillas
+      for (var i = 0; i < gorillas.length; i++) {
+        if (i === currentPlayer) continue; // Skip collision with the throwing gorilla
+        var g = gorillas[i];
+        var dx = banana.x - g.x;
+        var dy = banana.y - (g.y - 10);
+        var distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < 20) {
+          gameOver = true;
+          banana = null;
+          drawScene();
+          setTimeout(function() {
+            alert("Player " + (currentPlayer + 1) + " wins!");
+            resetGame();
+          }, 100);
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    function checkGorillaSupport() {
+      for (var i = 0; i < gorillas.length; i++) {
+        var g = gorillas[i];
+        // Get the building the gorilla is standing on
+        var buildingIndex = Math.floor(g.x / BUILDING_WIDTH);
+        var b = buildings[buildingIndex];
+
+        // Check if the gorilla is standing on solid building
+        var isSupported = isGorillaSupported(g, b);
+
+        if (!isSupported) {
+          // Start falling
+          g.isFalling = true;
+          g.vy = 0; // Reset vertical velocity
+          animateGorillaFall(g);
+        }
+      }
+    }
+
+    function isGorillaSupported(gorilla, building) {
+      if (!building) return false;
+      // Check if there's any building material directly beneath the gorilla
+      var pixelData = ctx.getImageData(gorilla.x, gorilla.y, 1, 1).data;
+      // If alpha channel is not zero, there is something beneath
+      return pixelData[3] !== 0;
+    }
+
+    function animateGorillaFall(gorilla) {
+      function update() {
+        if (!gorilla.isFalling) return;
+
+        gorilla.vy += GRAVITY * TIME_STEP;
+        gorilla.y += gorilla.vy * TIME_STEP;
+
+        // Check for collision with buildings or ground
+        if (gorilla.y >= canvas.height) {
+          gorilla.y = canvas.height;
+          gorilla.isFalling = false;
+          checkGameOver();
+          return;
+        }
+
+        // Check if gorilla lands on a building
+        for (var i = 0; i < buildings.length; i++) {
+          var b = buildings[i];
+          if (
+            gorilla.x > b.x &&
+            gorilla.x < b.x + b.width &&
+            gorilla.y >= b.y &&
+            gorilla.y <= b.y + b.height
+          ) {
+            // Check if there's solid building beneath
+            var isSupported = isGorillaSupported(gorilla, b);
+            if (isSupported) {
+              gorilla.y = b.y;
+              gorilla.isFalling = false;
+              return;
+            }
+          }
+        }
+
+        drawScene();
+        requestAnimationFrame(update);
+      }
+
+      update();
+    }
+
+    function checkGameOver() {
+      // If a gorilla falls off the screen, the other player wins
+      for (var i = 0; i < gorillas.length; i++) {
+        var g = gorillas[i];
+        if (g.y >= canvas.height) {
+          gameOver = true;
+          drawScene();
+          setTimeout(function() {
+            alert("Player " + ((i === 0 ? 2 : 1)) + " wins!");
+            resetGame();
+          }, 100);
+        }
+      }
+    }
+
+    function resetGame() {
+      location.reload();
+    }
+
+    // Event listeners for input overlay
+    document.getElementById('submitBtn').addEventListener('click', function() {
+      var angle = parseFloat(document.getElementById('angleInput').value);
+      var velocity = parseFloat(document.getElementById('velocityInput').value);
+
+      if (isNaN(angle) || isNaN(velocity) || angle < 0 || angle > 180 || velocity <= 0) {
+        alert('Please enter valid angle and velocity values.');
+        return;
+      }
+
+      // Save previous inputs
+      previousInputs[currentPlayer].angle = angle;
+      previousInputs[currentPlayer].velocity = velocity;
+
+      document.getElementById('inputOverlay').style.display = 'none';
+      startBananaThrow(angle, velocity);
+    });
 
     // Initialize the game
     function initGame() {
@@ -223,10 +454,8 @@
       drawScene();
     });
 
-    // Start the game when the banana image is loaded
-    bananaImg.onload = function() {
-      initGame();
-    };
+    // Start the game
+    initGame();
   </script>
 </body>
 </html>
