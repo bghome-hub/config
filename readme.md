@@ -1,8 +1,7 @@
-
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Gorillas Game with Building Damage and Banana Shape</title>
+  <title>Gorillas Game with Accumulating Damage and Remembered Inputs</title>
   <style>
     body { margin: 0; overflow: hidden; background-color: skyblue; }
     canvas { display: block; background-color: lightblue; }
@@ -74,6 +73,7 @@
     var currentPlayer = 0;
     var banana = null;
     var gameOver = false;
+    var previousInputs = [{angle: 45, velocity: 50}, {angle: 45, velocity: 50}]; // Default previous inputs for both players
 
     // Generate buildings
     function generateBuildings() {
@@ -193,8 +193,10 @@
       var inputOverlay = document.getElementById('inputOverlay');
       inputOverlay.style.display = 'flex';
       document.getElementById('playerNumber').innerText = currentPlayer + 1;
-      document.getElementById('angleInput').value = '';
-      document.getElementById('velocityInput').value = '';
+
+      // Pre-fill previous inputs
+      document.getElementById('angleInput').value = previousInputs[currentPlayer].angle;
+      document.getElementById('velocityInput').value = previousInputs[currentPlayer].velocity;
     }
 
     function startBananaThrow(angle, velocity) {
@@ -255,12 +257,31 @@
           banana.y + BANANA_HEIGHT / 2 > b.y &&
           banana.y - BANANA_HEIGHT / 2 < b.y + b.height
         ) {
-          // Add a hole to the building at the collision point
-          b.holes.push({
-            x: banana.x,
-            y: banana.y,
-            radius: 20
-          });
+          // Check if banana hits near an existing hole
+          var existingHole = null;
+          for (var h = 0; h < b.holes.length; h++) {
+            var hole = b.holes[h];
+            var dx = banana.x - hole.x;
+            var dy = banana.y - hole.y;
+            var distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance < hole.radius) {
+              existingHole = hole;
+              break;
+            }
+          }
+
+          if (existingHole) {
+            // Increase the hole radius
+            existingHole.radius += 10;
+          } else {
+            // Add a new hole to the building at the collision point
+            b.holes.push({
+              x: banana.x,
+              y: banana.y,
+              radius: 20
+            });
+          }
+
           banana = null;
           currentPlayer = 1 - currentPlayer;
           setTimeout(playerTurn, 500);
@@ -303,6 +324,10 @@
         alert('Please enter valid angle and velocity values.');
         return;
       }
+
+      // Save previous inputs
+      previousInputs[currentPlayer].angle = angle;
+      previousInputs[currentPlayer].velocity = velocity;
 
       document.getElementById('inputOverlay').style.display = 'none';
       startBananaThrow(angle, velocity);
