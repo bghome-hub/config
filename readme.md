@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html>
 <head>
@@ -62,7 +63,7 @@
     var MIN_BUILDING_HEIGHT = canvas.height / 4;
     var MAX_BUILDING_HEIGHT = canvas.height / 1.5;
     var BUILDING_WIDTH = canvas.width / NUM_BUILDINGS;
-    var GRAVITY = 9.8;
+    var GRAVITY = 9.8 * 100; // Scale gravity for better visual
     var TIME_STEP = 0.02;
     var BANANA_RADIUS = 5;
 
@@ -174,9 +175,9 @@
       function update() {
         if (!banana) return;
 
-        banana.x += banana.vx * TIME_STEP;
-        banana.y += banana.vy * TIME_STEP;
-        banana.vy += GRAVITY * TIME_STEP;
+        banana.x += banana.vx * TIME_STEP * 10;
+        banana.y += banana.vy * TIME_STEP * 10;
+        banana.vy += (GRAVITY * TIME_STEP) / 10;
 
         drawScene();
 
@@ -256,6 +257,25 @@
     // Start the game
     drawScene();
     setTimeout(playerTurn, 500); // Added delay to ensure canvas is rendered before the input overlay appears
+
+    // Handle window resize
+    window.addEventListener('resize', function() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      BUILDING_WIDTH = canvas.width / NUM_BUILDINGS;
+      // Recalculate building positions
+      for (var i = 0; i < buildings.length; i++) {
+        buildings[i].x = i * BUILDING_WIDTH;
+        buildings[i].width = BUILDING_WIDTH;
+        buildings[i].y = canvas.height - buildings[i].height;
+      }
+      // Reposition gorillas
+      gorillas[0].x = buildings[player1Building].x + buildings[player1Building].width / 2;
+      gorillas[0].y = buildings[player1Building].y;
+      gorillas[1].x = buildings[player2Building].x + buildings[player2Building].width / 2;
+      gorillas[1].y = buildings[player2Building].y;
+      drawScene();
+    });
   </script>
 </body>
 </html>
