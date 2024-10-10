@@ -1,7 +1,8 @@
+
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Enhanced Gorillas Game with Fixed Building Damage</title>
+  <title>Gorillas Game with Windows Destroyed on Impact</title>
   <style>
     body { margin: 0; overflow: hidden; background-color: skyblue; }
     canvas { display: block; background-color: skyblue; }
@@ -121,39 +122,29 @@
       for (var i = 0; i < buildings.length; i++) {
         var b = buildings[i];
 
-        // Draw building with holes
         ctx.save();
         // Draw the building
         ctx.fillStyle = 'gray';
         ctx.fillRect(b.x, b.y, b.width, b.height);
 
-        // Apply holes (damage)
-        ctx.globalCompositeOperation = 'destination-out';
-        for (var h = 0; h < b.holes.length; h++) {
-          var hole = b.holes[h];
-          ctx.beginPath();
-          ctx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-
-        // Draw windows
-        ctx.save();
-        // Ensure windows are affected by holes
-        ctx.beginPath();
-        ctx.rect(b.x, b.y, b.width, b.height);
-        for (var h = 0; h < b.holes.length; h++) {
-          var hole = b.holes[h];
-          ctx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
-        }
-        ctx.clip();
-
+        // Draw windows on the building
         ctx.fillStyle = 'yellow';
         for (var w = b.y + 10; w < b.y + b.height - 10; w += 20) {
           for (var v = b.x + 5; v < b.x + b.width - 10; v += 20) {
             ctx.fillRect(v, w, 10, 10);
           }
         }
+
+        // Apply holes (damage) to building and windows
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = 'black';
+        for (var h = 0; h < b.holes.length; h++) {
+          var hole = b.holes[h];
+          ctx.beginPath();
+          ctx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalCompositeOperation = 'source-over';
         ctx.restore();
       }
     }
@@ -353,16 +344,30 @@
 
     function isGorillaSupported(gorilla, building) {
       if (!building) return false;
-      // Create a new path for the building with holes
-      var buildingPath = new Path2D();
-      buildingPath.rect(building.x, building.y, building.width, building.height);
+
+      // Create a temporary canvas to test for pixel collision
+      var tempCanvas = document.createElement('canvas');
+      tempCanvas.width = canvas.width;
+      tempCanvas.height = canvas.height;
+      var tempCtx = tempCanvas.getContext('2d');
+
+      // Draw the building with holes on the temp canvas
+      tempCtx.fillStyle = 'gray';
+      tempCtx.fillRect(building.x, building.y, building.width, building.height);
+
+      // Apply holes
+      tempCtx.globalCompositeOperation = 'destination-out';
       for (var h = 0; h < building.holes.length; h++) {
         var hole = building.holes[h];
-        buildingPath.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
+        tempCtx.beginPath();
+        tempCtx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
+        tempCtx.fill();
       }
+      tempCtx.globalCompositeOperation = 'source-over';
 
-      // Check if the point beneath the gorilla is within the building path
-      return ctx.isPointInPath(buildingPath, gorilla.x, gorilla.y);
+      // Check if the point beneath the gorilla is opaque
+      var imageData = tempCtx.getImageData(gorilla.x, gorilla.y, 1, 1).data;
+      return imageData[3] > 0;
     }
 
     function animateGorillaFall(gorilla) {
