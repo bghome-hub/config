@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Gorillas Game with Enhanced Mechanics</title>
+  <title>Enhanced Gorillas Game</title>
   <style>
     body { margin: 0; overflow: hidden; background-color: skyblue; }
     canvas { display: block; background-color: lightblue; }
@@ -103,13 +103,15 @@
           x: buildings[player1Building].x + buildings[player1Building].width / 2,
           y: buildings[player1Building].y,
           color: 'red',
-          vy: 0 // Vertical velocity for falling
+          vy: 0, // Vertical velocity for falling
+          isFalling: false
         },
         {
           x: buildings[player2Building].x + buildings[player2Building].width / 2,
           y: buildings[player2Building].y,
           color: 'blue',
-          vy: 0 // Vertical velocity for falling
+          vy: 0, // Vertical velocity for falling
+          isFalling: false
         }
       ];
     }
@@ -119,36 +121,31 @@
       for (var i = 0; i < buildings.length; i++) {
         var b = buildings[i];
 
-        // Save context state
-        ctx.save();
+        // Create a clipping mask for the building holes
+        var buildingPath = new Path2D();
+        buildingPath.rect(b.x, b.y, b.width, b.height);
 
-        // Draw building
-        ctx.fillStyle = 'gray';
-        ctx.fillRect(b.x, b.y, b.width, b.height);
-
-        // Apply holes (damage)
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.fillStyle = 'black';
+        // Apply holes to the building
         for (var h = 0; h < b.holes.length; h++) {
           var hole = b.holes[h];
-          ctx.beginPath();
-          ctx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
-          ctx.fill();
+          buildingPath.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
         }
 
-        // Restore context state
+        // Draw the building with holes
+        ctx.save();
+        ctx.fillStyle = 'gray';
+        ctx.fill(buildingPath);
         ctx.restore();
 
         // Draw windows as part of the building
         ctx.save();
+        ctx.clip(buildingPath); // Ensure windows are clipped by the building shape
         ctx.fillStyle = 'yellow';
-        ctx.beginPath();
-        for (var w = b.y + 10; w < canvas.height - 10; w += 20) {
+        for (var w = b.y + 10; w < b.y + b.height - 10; w += 20) {
           for (var v = b.x + 5; v < b.x + b.width - 10; v += 20) {
-            ctx.rect(v, w, 10, 10);
+            ctx.fillRect(v, w, 10, 10);
           }
         }
-        ctx.fill();
         ctx.restore();
       }
     }
@@ -157,9 +154,12 @@
       for (var i = 0; i < gorillas.length; i++) {
         var g = gorillas[i];
         ctx.fillStyle = g.color;
-        ctx.beginPath();
-        ctx.arc(g.x, g.y - 10, 10, 0, Math.PI * 2);
-        ctx.fill();
+        // Draw a blocky gorilla character
+        ctx.fillRect(g.x - 10, g.y - 30, 20, 30); // Body
+        ctx.fillRect(g.x - 15, g.y - 40, 30, 10); // Head
+        ctx.fillStyle = 'black';
+        ctx.fillRect(g.x - 7, g.y - 37, 5, 5); // Left Eye
+        ctx.fillRect(g.x + 2, g.y - 37, 5, 5); // Right Eye
       }
     }
 
@@ -212,7 +212,7 @@
 
       banana = {
         x: gorilla.x,
-        y: gorilla.y - 10,
+        y: gorilla.y - 30, // Adjusted for blocky gorilla
         vx: velocity * Math.cos(angleRad) * direction,
         vy: -velocity * Math.sin(angleRad),
         angle: angleRad * direction
@@ -239,6 +239,9 @@
           banana = null;
           // Draw the scene immediately after collision to show damage
           drawScene();
+          // Switch to next player
+          currentPlayer = 1 - currentPlayer;
+          setTimeout(playerTurn, 500);
           return;
         }
 
@@ -303,7 +306,7 @@
         if (i === currentPlayer) continue; // Skip collision with the throwing gorilla
         var g = gorillas[i];
         var dx = banana.x - g.x;
-        var dy = banana.y - (g.y - 10);
+        var dy = banana.y - (g.y - 20); // Adjusted for blocky gorilla
         var distance = Math.sqrt(dx * dx + dy * dy);
         if (distance < 20) {
           gameOver = true;
@@ -323,6 +326,7 @@
     function checkGorillaSupport() {
       for (var i = 0; i < gorillas.length; i++) {
         var g = gorillas[i];
+        if (g.isFalling) continue; // Skip if already falling
         // Get the building the gorilla is standing on
         var buildingIndex = Math.floor(g.x / BUILDING_WIDTH);
         var b = buildings[buildingIndex];
@@ -342,9 +346,24 @@
     function isGorillaSupported(gorilla, building) {
       if (!building) return false;
       // Check if there's any building material directly beneath the gorilla
-      var pixelData = ctx.getImageData(gorilla.x, gorilla.y, 1, 1).data;
-      // If alpha channel is not zero, there is something beneath
-      return pixelData[3] !== 0;
+      // We'll create a small rectangle beneath the gorilla and check for collision with the building path
+      var gorillaFeetY = gorilla.y;
+      var supportFound = false;
+
+      // Create building path with holes
+      var buildingPath = new Path2D();
+      buildingPath.rect(building.x, building.y, building.width, building.height);
+      for (var h = 0; h < building.holes.length; h++) {
+        var hole = building.holes[h];
+        buildingPath.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
+      }
+
+      // Check if the point beneath the gorilla is within the building path
+      if (ctx.isPointInPath(buildingPath, gorilla.x, gorillaFeetY)) {
+        supportFound = true;
+      }
+
+      return supportFound;
     }
 
     function animateGorillaFall(gorilla) {
@@ -354,7 +373,7 @@
         gorilla.vy += GRAVITY * TIME_STEP;
         gorilla.y += gorilla.vy * TIME_STEP;
 
-        // Check for collision with buildings or ground
+        // Check for collision with ground
         if (gorilla.y >= canvas.height) {
           gorilla.y = canvas.height;
           gorilla.isFalling = false;
