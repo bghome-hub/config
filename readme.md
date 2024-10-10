@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Enhanced Gorillas Game</title>
+  <title>Enhanced Gorillas Game with Fixed Building Damage</title>
   <style>
     body { margin: 0; overflow: hidden; background-color: skyblue; }
-    canvas { display: block; background-color: lightblue; }
+    canvas { display: block; background-color: skyblue; }
     #inputOverlay {
       position: absolute;
       top: 0;
@@ -121,25 +121,33 @@
       for (var i = 0; i < buildings.length; i++) {
         var b = buildings[i];
 
-        // Create a clipping mask for the building holes
-        var buildingPath = new Path2D();
-        buildingPath.rect(b.x, b.y, b.width, b.height);
+        // Draw building with holes
+        ctx.save();
+        // Draw the building
+        ctx.fillStyle = 'gray';
+        ctx.fillRect(b.x, b.y, b.width, b.height);
 
-        // Apply holes to the building
+        // Apply holes (damage)
+        ctx.globalCompositeOperation = 'destination-out';
         for (var h = 0; h < b.holes.length; h++) {
           var hole = b.holes[h];
-          buildingPath.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
+          ctx.beginPath();
+          ctx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
+          ctx.fill();
         }
-
-        // Draw the building with holes
-        ctx.save();
-        ctx.fillStyle = 'gray';
-        ctx.fill(buildingPath);
         ctx.restore();
 
-        // Draw windows as part of the building
+        // Draw windows
         ctx.save();
-        ctx.clip(buildingPath); // Ensure windows are clipped by the building shape
+        // Ensure windows are affected by holes
+        ctx.beginPath();
+        ctx.rect(b.x, b.y, b.width, b.height);
+        for (var h = 0; h < b.holes.length; h++) {
+          var hole = b.holes[h];
+          ctx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
+        }
+        ctx.clip();
+
         ctx.fillStyle = 'yellow';
         for (var w = b.y + 10; w < b.y + b.height - 10; w += 20) {
           for (var v = b.x + 5; v < b.x + b.width - 10; v += 20) {
@@ -345,12 +353,7 @@
 
     function isGorillaSupported(gorilla, building) {
       if (!building) return false;
-      // Check if there's any building material directly beneath the gorilla
-      // We'll create a small rectangle beneath the gorilla and check for collision with the building path
-      var gorillaFeetY = gorilla.y;
-      var supportFound = false;
-
-      // Create building path with holes
+      // Create a new path for the building with holes
       var buildingPath = new Path2D();
       buildingPath.rect(building.x, building.y, building.width, building.height);
       for (var h = 0; h < building.holes.length; h++) {
@@ -359,11 +362,7 @@
       }
 
       // Check if the point beneath the gorilla is within the building path
-      if (ctx.isPointInPath(buildingPath, gorilla.x, gorillaFeetY)) {
-        supportFound = true;
-      }
-
-      return supportFound;
+      return ctx.isPointInPath(buildingPath, gorilla.x, gorilla.y);
     }
 
     function animateGorillaFall(gorilla) {
