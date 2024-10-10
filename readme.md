@@ -209,6 +209,7 @@
           banana.y + BANANA_RADIUS > b.y &&
           banana.y - BANANA_RADIUS < b.y + b.height
         ) {
+          banana = null;
           currentPlayer = 1 - currentPlayer;
           setTimeout(playerTurn, 500);
           return true;
@@ -217,6 +218,7 @@
 
       // Collision with gorillas
       for (var i = 0; i < gorillas.length; i++) {
+        if (i === currentPlayer) continue; // Skip collision with the throwing gorilla
         var g = gorillas[i];
         var dx = banana.x - g.x;
         var dy = banana.y - (g.y - 10);
