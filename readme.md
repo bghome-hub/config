@@ -1,230 +1,192 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Gorillas Game in A-Frame</title>
-    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-  </head>
-  <body>
-    <a-scene>
-      <!-- Sky background -->
-      <a-sky color="#87CEEB"></a-sky>
+<head>
+  <title>Gorillas Game</title>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: skyblue; }
+    canvas { display: block; background-color: lightblue; }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <script>
+    // Set up the canvas
+    var canvas = document.getElementById('gameCanvas');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    var ctx = canvas.getContext('2d');
 
-      <!-- Ground plane -->
-      <a-plane rotation="-90 0 0" width="100" height="100" color="#7CFC00"></a-plane>
+    // Game constants
+    var NUM_BUILDINGS = 20;
+    var MIN_BUILDING_HEIGHT = canvas.height / 8;
+    var MAX_BUILDING_HEIGHT = canvas.height / 2;
+    var BUILDING_WIDTH = canvas.width / NUM_BUILDINGS;
+    var GRAVITY = 9.8;
+    var VELOCITY_SCALE = 2;
+    var GRAVITY_SCALE = 0.5;
 
-      <!-- Generate buildings -->
-      <a-entity id="city"></a-entity>
+    // Game variables
+    var buildings = [];
+    var gorillas = [];
+    var currentPlayer = 0;
+    var banana = null;
 
-      <!-- Player 1 Gorilla -->
-      <a-sphere
-        id="gorilla1"
-        position="-45 12.5 -10"
-        radius="1"
-        color="#FF4500">
-      </a-sphere>
-
-      <!-- Player 2 Gorilla -->
-      <a-sphere
-        id="gorilla2"
-        position="45 12.5 -10"
-        radius="1"
-        color="#1E90FF">
-      </a-sphere>
-
-      <!-- Camera -->
-      <a-entity
-        camera
-        position="0 20 50"
-        rotation="-20 0 0"
-        look-controls
-        wasd-controls>
-      </a-entity>
-    </a-scene>
-
-    <!-- Scripts -->
-    <script>
-      // Generate buildings component
-      AFRAME.registerComponent('generate-buildings', {
-        init: function () {
-          const city = this.el;
-          const buildingCount = 20;
-          for (let i = 0; i < buildingCount; i++) {
-            const height = Math.random() * 10 + 5;
-            const building = document.createElement('a-box');
-            building.setAttribute('position', {
-              x: (i - buildingCount / 2) * 5,
-              y: height / 2,
-              z: -10,
-            });
-            building.setAttribute('depth', 5);
-            building.setAttribute('width', 5);
-            building.setAttribute('height', height);
-            building.setAttribute('color', '#8B4513');
-            building.setAttribute('class', 'building'); // For collision detection
-            city.appendChild(building);
-          }
-        },
+    // Generate buildings
+    for (var i = 0; i < NUM_BUILDINGS; i++) {
+      var buildingHeight = MIN_BUILDING_HEIGHT + Math.random() * (MAX_BUILDING_HEIGHT - MIN_BUILDING_HEIGHT);
+      buildings.push({
+        x: i * BUILDING_WIDTH,
+        y: canvas.height - buildingHeight,
+        width: BUILDING_WIDTH,
+        height: buildingHeight
       });
+    }
 
-      // Attach the generate-buildings component to the city entity
-      document.querySelector('#city').setAttribute('generate-buildings', '');
+    // Place gorillas on buildings
+    var player1Building = Math.floor(Math.random() * (NUM_BUILDINGS / 3));
+    var player2Building = Math.floor(NUM_BUILDINGS * (2 / 3) + Math.random() * (NUM_BUILDINGS / 3));
 
-      // Throw banana component
-      AFRAME.registerComponent('throw-banana', {
-        schema: {
-          angle: { type: 'number', default: 45 },
-          velocity: { type: 'number', default: 20 },
-          origin: { type: 'vec3', default: { x: 0, y: 0, z: 0 } },
-          fromPlayer: { type: 'number', default: 1 },
-        },
-        init: function () {
-          const banana = this.el;
-          let angleRad = (this.data.angle * Math.PI) / 180;
-          const velocity = this.data.velocity;
-          const origin = this.data.origin;
-          const fromPlayer = this.data.fromPlayer;
-
-          // Adjust angle for Player 2
-          if (fromPlayer === 2) {
-            angleRad = Math.PI - angleRad;
-          }
-
-          let time = 0;
-          const gravity = -9.81;
-          const deltaTime = 0.02;
-
-          const velocityX = velocity * Math.cos(angleRad);
-          const velocityY = velocity * Math.sin(angleRad);
-
-          banana.setAttribute('position', origin);
-
-          this.interval = setInterval(() => {
-            time += deltaTime;
-            const x = origin.x + velocityX * time;
-            const y = origin.y + velocityY * time + 0.5 * gravity * time * time;
-            if (y <= 0) {
-              clearInterval(this.interval);
-              banana.parentNode.removeChild(banana);
-              // Start next turn
-              nextTurn();
-              return;
-            }
-            banana.setAttribute('position', { x: x, y: y, z: origin.z });
-          }, deltaTime * 1000);
-        },
-        remove: function () {
-          if (this.interval) {
-            clearInterval(this.interval);
-          }
-        },
-      });
-
-      // Collision detection component
-      AFRAME.registerComponent('check-collision', {
-        tick: function () {
-          const banana = this.el;
-          const bananaPos = banana.getAttribute('position');
-          const fromPlayer = parseInt(banana.getAttribute('from-player'));
-          const targetGorillaId = fromPlayer === 1 ? '#gorilla2' : '#gorilla1';
-          const targetGorilla = document.querySelector(targetGorillaId);
-          const targetGorillaPos = targetGorilla.getAttribute('position');
-
-          // Check collision with target gorilla
-          const distanceToTargetGorilla = distance(bananaPos, targetGorillaPos);
-
-          if (distanceToTargetGorilla < 1) {
-            alert(`Player ${fromPlayer} wins!`);
-            banana.parentNode.removeChild(banana);
-            gameOver = true;
-            return;
-          }
-
-          // Check collision with buildings
-          const buildings = document.querySelectorAll('.building');
-          for (let i = 0; i < buildings.length; i++) {
-            const building = buildings[i];
-            const buildingPos = building.getAttribute('position');
-            const buildingHeight = parseFloat(building.getAttribute('height'));
-            const buildingWidth = parseFloat(building.getAttribute('width'));
-            const buildingDepth = parseFloat(building.getAttribute('depth'));
-
-            // Check if banana is within the building's bounding box
-            if (
-              bananaPos.x >= (buildingPos.x - buildingWidth / 2) &&
-              bananaPos.x <= (buildingPos.x + buildingWidth / 2) &&
-              bananaPos.y >= (buildingPos.y - buildingHeight / 2) &&
-              bananaPos.y <= (buildingPos.y + buildingHeight / 2) &&
-              bananaPos.z >= (buildingPos.z - buildingDepth / 2) &&
-              bananaPos.z <= (buildingPos.z + buildingDepth / 2)
-            ) {
-              // Collision detected
-              banana.parentNode.removeChild(banana);
-              building.parentNode.removeChild(building);
-              nextTurn();
-              return;
-            }
-          }
-        },
-      });
-
-      // Helper function to calculate distance
-      function distance(pos1, pos2) {
-        const dx = pos1.x - pos2.x;
-        const dy = pos1.y - pos2.y;
-        const dz = pos1.z - pos2.z;
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    gorillas = [
+      {
+        x: buildings[player1Building].x + buildings[player1Building].width / 2,
+        y: buildings[player1Building].y - 10,
+        color: 'red'
+      },
+      {
+        x: buildings[player2Building].x + buildings[player2Building].width / 2,
+        y: buildings[player2Building].y - 10,
+        color: 'blue'
       }
+    ];
 
-      let currentPlayer = 1;
-      let gameOver = false;
-
-      // Function to handle player input and throw the banana
-      function throwBanana(fromPlayer) {
-        const angleInput = prompt(`Player ${fromPlayer}, enter angle (degrees):`, '45');
-        if (angleInput === null) return;
-        const angle = parseFloat(angleInput);
-        if (isNaN(angle)) {
-          alert('Invalid angle. Please enter a number.');
-          throwBanana(fromPlayer);
-          return;
+    // Draw functions
+    function drawBuildings() {
+      for (var i = 0; i < buildings.length; i++) {
+        var b = buildings[i];
+        ctx.fillStyle = 'gray';
+        ctx.fillRect(b.x, b.y, b.width, b.height);
+        // Windows
+        ctx.fillStyle = 'yellow';
+        for (var w = b.y + 10; w < canvas.height - 10; w += 20) {
+          for (var v = b.x + 5; v < b.x + b.width - 5; v += 15) {
+            ctx.fillRect(v, w, 10, 10);
+          }
         }
-        const velocityInput = prompt(`Player ${fromPlayer}, enter velocity:`, '20');
-        if (velocityInput === null) return;
-        const velocity = parseFloat(velocityInput);
-        if (isNaN(velocity)) {
-          alert('Invalid velocity. Please enter a number.');
-          throwBanana(fromPlayer);
-          return;
-        }
-        const banana = document.createElement('a-sphere');
-        banana.setAttribute('color', '#FFFF00');
-        banana.setAttribute('radius', '0.5');
-        const originId = fromPlayer === 1 ? '#gorilla1' : '#gorilla2';
-        const originEl = document.querySelector(originId);
-        const originPos = originEl.getAttribute('position');
-        banana.setAttribute('throw-banana', {
-          angle: angle,
-          velocity: velocity,
-          origin: originPos,
-          fromPlayer: fromPlayer,
-        });
-        banana.setAttribute('from-player', fromPlayer.toString());
-        banana.setAttribute('check-collision', '');
-        document.querySelector('a-scene').appendChild(banana);
+      }
+    }
+
+    function drawGorillas() {
+      for (var i = 0; i < gorillas.length; i++) {
+        var g = gorillas[i];
+        ctx.fillStyle = g.color;
+        ctx.beginPath();
+        ctx.arc(g.x, g.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawBanana() {
+      if (banana) {
+        ctx.fillStyle = 'yellow';
+        ctx.beginPath();
+        ctx.arc(banana.x, banana.y, banana.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawScene() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawBuildings();
+      drawGorillas();
+      drawBanana();
+    }
+
+    // Game logic
+    function playerTurn() {
+      var angle = parseFloat(prompt("Player " + (currentPlayer + 1) + ": Enter angle (degrees):"));
+      var velocity = parseFloat(prompt("Player " + (currentPlayer + 1) + ": Enter velocity:"));
+
+      if (isNaN(angle) || isNaN(velocity)) {
+        alert("Invalid input. Try again.");
+        playerTurn();
+        return;
       }
 
-      // Function to handle turns
-      function nextTurn() {
-        if (gameOver) return;
-        currentPlayer = currentPlayer === 1 ? 2 : 1;
-        throwBanana(currentPlayer);
-      }
+      var angleRad = angle * Math.PI / 180;
+      var gorilla = gorillas[currentPlayer];
+      var x0 = gorilla.x;
+      var y0 = gorilla.y;
 
-      // Start the game
-      window.onload = function () {
-        throwBanana(currentPlayer);
+      banana = {
+        x: x0,
+        y: y0,
+        vx: velocity * Math.cos(angleRad) * (currentPlayer === 0 ? 1 : -1) * VELOCITY_SCALE,
+        vy: -velocity * Math.sin(angleRad) * VELOCITY_SCALE,
+        radius: 5
       };
-    </script>
-  </body>
+
+      animateBanana();
+    }
+
+    function animateBanana() {
+      function update() {
+        banana.x += banana.vx * 0.02;
+        banana.y += banana.vy * 0.02;
+        banana.vy += GRAVITY * GRAVITY_SCALE * 0.02;
+
+        if (checkCollision()) {
+          return;
+        }
+
+        if (banana.x < 0 || banana.x > canvas.width || banana.y > canvas.height) {
+          banana = null;
+          currentPlayer = 1 - currentPlayer;
+          playerTurn();
+          return;
+        }
+
+        drawScene();
+        requestAnimationFrame(update);
+      }
+
+      update();
+    }
+
+    function checkCollision() {
+      // Collision with buildings
+      for (var i = 0; i < buildings.length; i++) {
+        var b = buildings[i];
+        if (banana.x > b.x && banana.x < b.x + b.width && banana.y > b.y) {
+          banana = null;
+          currentPlayer = 1 - currentPlayer;
+          playerTurn();
+          return true;
+        }
+      }
+
+      // Collision with gorillas
+      for (var i = 0; i < gorillas.length; i++) {
+        var g = gorillas[i];
+        var dx = banana.x - g.x;
+        var dy = banana.y - g.y;
+        var distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < banana.radius + 10) {
+          alert("Player " + (currentPlayer + 1) + " wins!");
+          resetGame();
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    function resetGame() {
+      location.reload();
+    }
+
+    // Start the game
+    drawScene();
+    playerTurn();
+  </script>
+</body>
 </html>
