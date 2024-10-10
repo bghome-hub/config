@@ -178,6 +178,8 @@
         banana.y += banana.vy * TIME_STEP;
         banana.vy += GRAVITY * TIME_STEP;
 
+        drawScene();
+
         if (checkCollision()) {
           banana = null;
           return;
@@ -190,7 +192,6 @@
           return;
         }
 
-        drawScene();
         requestAnimationFrame(update);
       }
 
@@ -202,10 +203,10 @@
       for (var i = 0; i < buildings.length; i++) {
         var b = buildings[i];
         if (
-          banana.x > b.x &&
-          banana.x < b.x + b.width &&
-          banana.y > b.y &&
-          banana.y < b.y + b.height
+          banana.x + BANANA_RADIUS > b.x &&
+          banana.x - BANANA_RADIUS < b.x + b.width &&
+          banana.y + BANANA_RADIUS > b.y &&
+          banana.y - BANANA_RADIUS < b.y + b.height
         ) {
           currentPlayer = 1 - currentPlayer;
           setTimeout(playerTurn, 500);
@@ -221,6 +222,7 @@
         var distance = Math.sqrt(dx * dx + dy * dy);
         if (distance < BANANA_RADIUS + 10) {
           gameOver = true;
+          banana = null;
           drawScene();
           setTimeout(function() {
             alert("Player " + (currentPlayer + 1) + " wins!");
@@ -253,7 +255,7 @@
 
     // Start the game
     drawScene();
-    playerTurn();
+    setTimeout(playerTurn, 500); // Added delay to ensure canvas is rendered before the input overlay appears
   </script>
 </body>
 </html>
