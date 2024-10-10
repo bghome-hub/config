@@ -61,6 +61,7 @@
             building.setAttribute('width', 5);
             building.setAttribute('height', height);
             building.setAttribute('color', '#8B4513');
+            building.setAttribute('class', 'building'); // For collision detection
             city.appendChild(building);
           }
         },
@@ -129,13 +130,40 @@
           const targetGorilla = document.querySelector(targetGorillaId);
           const targetGorillaPos = targetGorilla.getAttribute('position');
 
+          // Check collision with target gorilla
           const distanceToTargetGorilla = distance(bananaPos, targetGorillaPos);
 
           if (distanceToTargetGorilla < 1) {
             alert(`Player ${fromPlayer} wins!`);
             banana.parentNode.removeChild(banana);
-            // Stop the game or reset
             gameOver = true;
+            return;
+          }
+
+          // Check collision with buildings
+          const buildings = document.querySelectorAll('.building');
+          for (let i = 0; i < buildings.length; i++) {
+            const building = buildings[i];
+            const buildingPos = building.getAttribute('position');
+            const buildingHeight = parseFloat(building.getAttribute('height'));
+            const buildingWidth = parseFloat(building.getAttribute('width'));
+            const buildingDepth = parseFloat(building.getAttribute('depth'));
+
+            // Check if banana is within the building's bounding box
+            if (
+              bananaPos.x >= (buildingPos.x - buildingWidth / 2) &&
+              bananaPos.x <= (buildingPos.x + buildingWidth / 2) &&
+              bananaPos.y >= (buildingPos.y - buildingHeight / 2) &&
+              bananaPos.y <= (buildingPos.y + buildingHeight / 2) &&
+              bananaPos.z >= (buildingPos.z - buildingDepth / 2) &&
+              bananaPos.z <= (buildingPos.z + buildingDepth / 2)
+            ) {
+              // Collision detected
+              banana.parentNode.removeChild(banana);
+              building.parentNode.removeChild(building);
+              nextTurn();
+              return;
+            }
           }
         },
       });
@@ -153,10 +181,22 @@
 
       // Function to handle player input and throw the banana
       function throwBanana(fromPlayer) {
-        const angle = prompt(`Player ${fromPlayer}, enter angle (degrees):`, '45');
-        if (angle === null) return; // Player cancelled
-        const velocity = prompt(`Player ${fromPlayer}, enter velocity:`, '20');
-        if (velocity === null) return;
+        const angleInput = prompt(`Player ${fromPlayer}, enter angle (degrees):`, '45');
+        if (angleInput === null) return;
+        const angle = parseFloat(angleInput);
+        if (isNaN(angle)) {
+          alert('Invalid angle. Please enter a number.');
+          throwBanana(fromPlayer);
+          return;
+        }
+        const velocityInput = prompt(`Player ${fromPlayer}, enter velocity:`, '20');
+        if (velocityInput === null) return;
+        const velocity = parseFloat(velocityInput);
+        if (isNaN(velocity)) {
+          alert('Invalid velocity. Please enter a number.');
+          throwBanana(fromPlayer);
+          return;
+        }
         const banana = document.createElement('a-sphere');
         banana.setAttribute('color', '#FFFF00');
         banana.setAttribute('radius', '0.5');
@@ -164,8 +204,8 @@
         const originEl = document.querySelector(originId);
         const originPos = originEl.getAttribute('position');
         banana.setAttribute('throw-banana', {
-          angle: parseFloat(angle),
-          velocity: parseFloat(velocity),
+          angle: angle,
+          velocity: velocity,
           origin: originPos,
           fromPlayer: fromPlayer,
         });
