@@ -1,7 +1,8 @@
+
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Gorillas Game with Accumulating Damage and Remembered Inputs</title>
+  <title>Gorillas Game with Enhanced Features</title>
   <style>
     body { margin: 0; overflow: hidden; background-color: skyblue; }
     canvas { display: block; background-color: lightblue; }
@@ -73,7 +74,9 @@
     var currentPlayer = 0;
     var banana = null;
     var gameOver = false;
-    var previousInputs = [{angle: 45, velocity: 50}, {angle: 45, velocity: 50}]; // Default previous inputs for both players
+    var previousInputs = [{angle: 45, velocity: 50}, {angle: 45, velocity: 50}];
+    var bananaImg = new Image();
+    bananaImg.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAOCAYAAAB/73ocAAAABmJLR0QA/wD/AP+gvaeTAAACu0lEQVRIie2WP4iVURjHP9cYq+apSqVpS+RyaZSUUkiJQaLo3aUdJYgN0NoSm4aXFQpRExFUpFIqClpUyLlUCSKcH6mFaEDf3jH1u1nZPdnZ2d3Txfw5xe86b9m37HPP8/e77/fh1yAn1A99xTwtBA4AcSBQJmgAtwA+IEbkAl8AC4BQ6AThDYqppFfXArsA1UBVYB+IQQEIzfMJ7ABsAYNwPDABYk0nIkgS3+vG0r19RpIuY11e01CH8IroP6NpoNxJAE2Qx4CbpUq+Ad9kF+xHVvS6ur4dOAh4rFBSiOhbTi0CqI1pAJxBbSNZC6qygFa3JGkrnE1kBn0tANoDYbG1aUepNimVbf1plV7R0UpFfth2eX5oB1wFp6T6i10rQvgA+CLqoWJGgSTgHdSkwMSuB+4Bh4ABi0BRSDs8VD4DY4CLgKxAWzjs1O+i68DIp1eSlZeXioc2gJXgAvAQ+APsDRYDaYRHUBj4F1gAHgOjwDC0E3hgdAygNoIZl9XN6rOXotAHx4EjIdquYAw4EroFJYV6FbeBL0K/Sr2MekFHBpMg2eARcAV0oC3gDPAS3gSeAatA1kE0hEQJEp+0qS2rgGPhvcK0uciyVgO7Aq2nY5drUrR1CjYFfgIXAM+ARcAkzF9YlvAlG1IlgFnwdfArUAV6AEYEn4J1vqc+BkLJbVp17ivA4xN1jnhIXAJeCJ+DC4A98Bt4Gj9InZgT+YRCkBd2Ar6GpJNpAY+BQeBQ+AIPBG+AH6GjYAI4CFwAfjv+31vIqQX9J8pimxBNmCCeCZucVUA5sA14B9gPPgGzgnrWPU0+it6N3vOXpl3ufCz3/ppNxVTmZXUzZzpcPrKzXDY6LBbDFgXwrsoBNISapI6nbkPG0lYwWLCoyVIn6xSot3Q0mYLF3nOfC0fIEZSMi3yUov0gfy2pGcnE/Rr69Z0ap/fif3XQyT4xqGJ4AyYnNZxZUKvFv6Tm6mK/lcJxV7wOtQwqnl/tJg6l+a1kmq7qJgAAAABJRU5ErkJggg==';
 
     // Generate buildings
     function generateBuildings() {
@@ -102,12 +105,16 @@
         {
           x: buildings[player1Building].x + buildings[player1Building].width / 2,
           y: buildings[player1Building].y,
-          color: 'red'
+          color: 'red',
+          falling: false,
+          vy: 0
         },
         {
           x: buildings[player2Building].x + buildings[player2Building].width / 2,
           y: buildings[player2Building].y,
-          color: 'blue'
+          color: 'blue',
+          falling: false,
+          vy: 0
         }
       ];
     }
@@ -120,22 +127,21 @@
         // Save context state
         ctx.save();
 
-        // Draw building
-        ctx.fillStyle = 'gray';
-        ctx.fillRect(b.x, b.y, b.width, b.height);
+        // Create building path
+        ctx.beginPath();
+        ctx.rect(b.x, b.y, b.width, b.height);
 
         // Apply holes (damage)
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.fillStyle = 'black';
         for (var h = 0; h < b.holes.length; h++) {
           var hole = b.holes[h];
-          ctx.beginPath();
+          ctx.save();
           ctx.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.clip();
         }
 
-        // Restore context state
-        ctx.restore();
+        // Fill building with windows
+        ctx.fillStyle = 'gray';
+        ctx.fill();
 
         // Draw windows
         ctx.fillStyle = 'yellow';
@@ -144,6 +150,9 @@
             ctx.fillRect(v, w, 10, 10);
           }
         }
+
+        // Restore context state
+        ctx.restore();
       }
     }
 
@@ -162,21 +171,9 @@
         ctx.save();
         ctx.translate(banana.x, banana.y);
         ctx.rotate(banana.angle);
-        drawBananaShape();
+        ctx.drawImage(bananaImg, -BANANA_WIDTH / 2, -BANANA_HEIGHT / 2, BANANA_WIDTH, BANANA_HEIGHT);
         ctx.restore();
       }
-    }
-
-    function drawBananaShape() {
-      ctx.fillStyle = 'yellow';
-      ctx.beginPath();
-      ctx.moveTo(-BANANA_WIDTH / 2, 0);
-      ctx.quadraticCurveTo(0, -BANANA_HEIGHT, BANANA_WIDTH / 2, 0);
-      ctx.quadraticCurveTo(0, BANANA_HEIGHT, -BANANA_WIDTH / 2, 0);
-      ctx.fill();
-      ctx.strokeStyle = 'brown';
-      ctx.lineWidth = 2;
-      ctx.stroke();
     }
 
     function drawScene() {
@@ -217,23 +214,56 @@
 
     function animateBanana() {
       function update() {
-        if (!banana) return;
+        if (!banana && !gorillas[0].falling && !gorillas[1].falling) return;
 
-        banana.x += banana.vx * TIME_STEP * 10;
-        banana.y += banana.vy * TIME_STEP * 10;
-        banana.vy += (GRAVITY * TIME_STEP) / 10;
+        if (banana) {
+          banana.x += banana.vx * TIME_STEP * 10;
+          banana.y += banana.vy * TIME_STEP * 10;
+          banana.vy += (GRAVITY * TIME_STEP) / 10;
 
-        // Update banana rotation
-        banana.angle += 0.1 * direction;
+          // Update banana rotation
+          banana.angle += 0.1 * direction;
+
+          checkCollision();
+        }
+
+        // Update gorillas if they are falling
+        for (var i = 0; i < gorillas.length; i++) {
+          var g = gorillas[i];
+          if (g.falling) {
+            g.vy += GRAVITY * TIME_STEP;
+            g.y += g.vy * TIME_STEP;
+
+            // Check if gorilla landed on a building
+            var landed = false;
+            for (var j = 0; j < buildings.length; j++) {
+              var b = buildings[j];
+              if (
+                g.x > b.x &&
+                g.x < b.x + b.width &&
+                g.y >= b.y - 10 &&
+                !isPointInHole(b, g.x, b.y)
+              ) {
+                g.y = b.y;
+                g.falling = false;
+                g.vy = 0;
+                landed = true;
+                break;
+              }
+            }
+
+            // If not landed on a building, check if on ground
+            if (!landed && g.y >= canvas.height - 10) {
+              g.y = canvas.height - 10;
+              g.falling = false;
+              g.vy = 0;
+            }
+          }
+        }
 
         drawScene();
 
-        if (checkCollision()) {
-          banana = null;
-          return;
-        }
-
-        if (banana.x < 0 || banana.x > canvas.width || banana.y > canvas.height) {
+        if (banana && (banana.x < 0 || banana.x > canvas.width || banana.y > canvas.height)) {
           banana = null;
           currentPlayer = 1 - currentPlayer;
           setTimeout(playerTurn, 500);
@@ -247,6 +277,19 @@
       update();
     }
 
+    function isPointInHole(building, x, y) {
+      for (var h = 0; h < building.holes.length; h++) {
+        var hole = building.holes[h];
+        var dx = x - hole.x;
+        var dy = y - hole.y;
+        var distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < hole.radius) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     function checkCollision() {
       // Collision with buildings
       for (var i = 0; i < buildings.length; i++) {
@@ -257,35 +300,13 @@
           banana.y + BANANA_HEIGHT / 2 > b.y &&
           banana.y - BANANA_HEIGHT / 2 < b.y + b.height
         ) {
-          // Check if banana hits near an existing hole
-          var existingHole = null;
-          for (var h = 0; h < b.holes.length; h++) {
-            var hole = b.holes[h];
-            var dx = banana.x - hole.x;
-            var dy = banana.y - hole.y;
-            var distance = Math.sqrt(dx * dx + dy * dy);
-            if (distance < hole.radius) {
-              existingHole = hole;
-              break;
-            }
-          }
-
-          if (existingHole) {
-            // Increase the hole radius
-            existingHole.radius += 10;
-          } else {
-            // Add a new hole to the building at the collision point
-            b.holes.push({
-              x: banana.x,
-              y: banana.y,
-              radius: 20
-            });
-          }
+          // Add damage immediately
+          applyDamage(b, banana.x, banana.y);
 
           banana = null;
           currentPlayer = 1 - currentPlayer;
           setTimeout(playerTurn, 500);
-          return true;
+          return;
         }
       }
 
@@ -304,11 +325,49 @@
             alert("Player " + (currentPlayer + 1) + " wins!");
             resetGame();
           }, 100);
-          return true;
+          return;
+        }
+      }
+    }
+
+    function applyDamage(building, x, y) {
+      // Check if banana hits near an existing hole
+      var existingHole = null;
+      for (var h = 0; h < building.holes.length; h++) {
+        var hole = building.holes[h];
+        var dx = x - hole.x;
+        var dy = y - hole.y;
+        var distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < hole.radius) {
+          existingHole = hole;
+          break;
         }
       }
 
-      return false;
+      if (existingHole) {
+        // Increase the hole radius
+        existingHole.radius += 10;
+      } else {
+        // Add a new hole to the building at the collision point
+        building.holes.push({
+          x: x,
+          y: y,
+          radius: 20
+        });
+      }
+
+      // Check if any gorilla is standing over a hole
+      for (var i = 0; i < gorillas.length; i++) {
+        var g = gorillas[i];
+        if (
+          g.x > building.x &&
+          g.x < building.x + building.width &&
+          g.y >= building.y - 10 &&
+          isPointInHole(building, g.x, building.y)
+        ) {
+          g.falling = true;
+        }
+      }
     }
 
     function resetGame() {
@@ -362,8 +421,10 @@
       drawScene();
     });
 
-    // Start the game
-    initGame();
+    // Start the game when the banana image is loaded
+    bananaImg.onload = function() {
+      initGame();
+    };
   </script>
 </body>
 </html>
