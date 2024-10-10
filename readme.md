@@ -75,12 +75,19 @@
           angle: { type: 'number', default: 45 },
           velocity: { type: 'number', default: 20 },
           origin: { type: 'vec3', default: { x: 0, y: 0, z: 0 } },
+          fromPlayer: { type: 'number', default: 1 },
         },
         init: function () {
           const banana = this.el;
-          const angleRad = (this.data.angle * Math.PI) / 180;
+          let angleRad = (this.data.angle * Math.PI) / 180;
           const velocity = this.data.velocity;
           const origin = this.data.origin;
+          const fromPlayer = this.data.fromPlayer;
+
+          // Adjust angle for Player 2
+          if (fromPlayer === 2) {
+            angleRad = Math.PI - angleRad;
+          }
 
           let time = 0;
           const gravity = -9.81;
@@ -98,6 +105,8 @@
             if (y <= 0) {
               clearInterval(this.interval);
               banana.parentNode.removeChild(banana);
+              // Start next turn
+              nextTurn();
               return;
             }
             banana.setAttribute('position', { x: x, y: y, z: origin.z });
@@ -115,20 +124,18 @@
         tick: function () {
           const banana = this.el;
           const bananaPos = banana.getAttribute('position');
-          const gorilla1 = document.querySelector('#gorilla1');
-          const gorilla2 = document.querySelector('#gorilla2');
-          const gorilla1Pos = gorilla1.getAttribute('position');
-          const gorilla2Pos = gorilla2.getAttribute('position');
+          const fromPlayer = parseInt(banana.getAttribute('from-player'));
+          const targetGorillaId = fromPlayer === 1 ? '#gorilla2' : '#gorilla1';
+          const targetGorilla = document.querySelector(targetGorillaId);
+          const targetGorillaPos = targetGorilla.getAttribute('position');
 
-          const distanceToGorilla1 = distance(bananaPos, gorilla1Pos);
-          const distanceToGorilla2 = distance(bananaPos, gorilla2Pos);
+          const distanceToTargetGorilla = distance(bananaPos, targetGorillaPos);
 
-          if (distanceToGorilla1 < 1) {
-            alert('Player 2 wins!');
+          if (distanceToTargetGorilla < 1) {
+            alert(`Player ${fromPlayer} wins!`);
             banana.parentNode.removeChild(banana);
-          } else if (distanceToGorilla2 < 1) {
-            alert('Player 1 wins!');
-            banana.parentNode.removeChild(banana);
+            // Stop the game or reset
+            gameOver = true;
           }
         },
       });
@@ -141,10 +148,15 @@
         return Math.sqrt(dx * dx + dy * dy + dz * dz);
       }
 
+      let currentPlayer = 1;
+      let gameOver = false;
+
       // Function to handle player input and throw the banana
       function throwBanana(fromPlayer) {
         const angle = prompt(`Player ${fromPlayer}, enter angle (degrees):`, '45');
+        if (angle === null) return; // Player cancelled
         const velocity = prompt(`Player ${fromPlayer}, enter velocity:`, '20');
+        if (velocity === null) return;
         const banana = document.createElement('a-sphere');
         banana.setAttribute('color', '#FFFF00');
         banana.setAttribute('radius', '0.5');
@@ -155,19 +167,24 @@
           angle: parseFloat(angle),
           velocity: parseFloat(velocity),
           origin: originPos,
+          fromPlayer: fromPlayer,
         });
+        banana.setAttribute('from-player', fromPlayer.toString());
         banana.setAttribute('check-collision', '');
         document.querySelector('a-scene').appendChild(banana);
       }
 
-      // Simulate turns between players
-      setTimeout(() => {
-        throwBanana(1);
-      }, 1000);
+      // Function to handle turns
+      function nextTurn() {
+        if (gameOver) return;
+        currentPlayer = currentPlayer === 1 ? 2 : 1;
+        throwBanana(currentPlayer);
+      }
 
-      setTimeout(() => {
-        throwBanana(2);
-      }, 5000);
+      // Start the game
+      window.onload = function () {
+        throwBanana(currentPlayer);
+      };
     </script>
   </body>
 </html>
