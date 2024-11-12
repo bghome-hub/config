@@ -1,4 +1,4 @@
-DECLARE @UserName NVARCHAR(128) = 'Domain\UserName';  -- Replace with the actual username
+  DECLARE @UserName NVARCHAR(128) = 'Domain\UserName';  -- Replace with the actual username
 
 -- Loop through each database and check for owned objects
 DECLARE @SQL NVARCHAR(MAX);
