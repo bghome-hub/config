@@ -1,46 +1,32 @@
-  DECLARE @UserName NVARCHAR(128) = 'Domain\UserName';  -- Replace with the actual username
-
--- Loop through each database and check for owned objects
+DECLARE @LoginName SYSNAME = 'YourLoginName'; -- Replace with your login name
+DECLARE @DBName SYSNAME;
 DECLARE @SQL NVARCHAR(MAX);
 
--- Temporary table to store results
-CREATE TABLE #OwnedObjects (
-    DatabaseName NVARCHAR(128),
-    ObjectName NVARCHAR(128),
-    ObjectType NVARCHAR(128)
-);
-
 DECLARE db_cursor CURSOR FOR
-SELECT name
-FROM sys.databases
-WHERE state_desc = 'ONLINE' AND name NOT IN ('master', 'tempdb', 'model', 'msdb');
+SELECT name FROM sys.databases
+WHERE state_desc = 'ONLINE' AND database_id > 4;  -- Exclude system databases
 
 OPEN db_cursor;
-DECLARE @DatabaseName NVARCHAR(128);
+FETCH NEXT FROM db_cursor INTO @DBName;
 
-FETCH NEXT FROM db_cursor INTO @DatabaseName;
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    SET @SQL = N'
-    USE ' + QUOTENAME(@DatabaseName) + ';
-    INSERT INTO #OwnedObjects (DatabaseName, ObjectName, ObjectType)
-    SELECT ''' + @DatabaseName + ''' AS DatabaseName,
-           o.name AS ObjectName,
-           o.type_desc AS ObjectType
+    SET @SQL = N'USE [' + QUOTENAME(@DBName) + '];
+
+    SELECT
+        DB_NAME() AS DatabaseName,
+        s.name AS SchemaName,
+        o.name AS ObjectName,
+        o.type_desc AS ObjectType
     FROM sys.objects o
-    JOIN sys.database_principals dp ON o.principal_id = dp.principal_id
-    WHERE dp.name = @UserName;';
+    INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+    INNER JOIN sys.database_principals dp ON s.principal_id = dp.principal_id
+    WHERE dp.sid = SUSER_SID(''' + @LoginName + ''');';
 
-    EXEC sp_executesql @SQL, N'@UserName NVARCHAR(128)', @UserName;
+    EXEC sp_executesql @SQL;
 
-    FETCH NEXT FROM db_cursor INTO @DatabaseName;
+    FETCH NEXT FROM db_cursor INTO @DBName;
 END
 
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
-
--- View owned objects
-SELECT * FROM #OwnedObjects;
-
--- Drop temporary table
-DROP TABLE #OwnedObjects;
