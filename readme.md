@@ -1,82 +1,96 @@
- CREATE PROCEDURE SP_Calc_Rush_With_GOTO
-    @AN1 VARCHAR(MAX),
-    @AN2 VARCHAR(MAX),
-    @AN3 VARCHAR(MAX),
-    @AN4 VARCHAR(MAX),
-    @AN5 VARCHAR(MAX),
-    @AN6 VARCHAR(MAX),
-    @AN7 VARCHAR(MAX),
-    @AN8 VARCHAR(MAX),
-    @AN9 VARCHAR(MAX),
-    @AN10 VARCHAR(MAX),
-    @AN11 VARCHAR(MAX),
-    @AN12 VARCHAR(MAX)
+ CREATE PROCEDURE SP_Calc_Rush_Cursor_GOTO
+    @pi_answer_1 VARCHAR(MAX),
+    @pi_answer_2 VARCHAR(MAX),
+    @pi_answer_3 VARCHAR(MAX),
+    @pi_answer_4 VARCHAR(MAX),
+    @pi_answer_5 VARCHAR(MAX),
+    @pi_answer_6 VARCHAR(MAX),
+    @pi_answer_7 VARCHAR(MAX),
+    @pi_answer_8 VARCHAR(MAX),
+    @pi_answer_9 VARCHAR(MAX),
+    @pi_answer_10 VARCHAR(MAX),
+    @pi_answer_11 VARCHAR(MAX),
+    @pi_answer_12 VARCHAR(MAX)
 AS
 BEGIN
-    -- Declare ALL variables upfront regardless of usage
-    DECLARE @A INT, @B INT, @C INT, @D INT, @E INT, @F INT, @G INT, @H INT, @I INT, @J INT, @K INT, @L INT;
-    DECLARE @Result INT;
-    DECLARE @TempSum INT;
-    DECLARE @Counter INT;
+    -- Local variable declarations with verbose and inconsistent naming
+    DECLARE @_answer_1 VARCHAR(MAX), @_answer_2 VARCHAR(MAX), @_answer_3 VARCHAR(MAX),
+            @_answer_4 VARCHAR(MAX), @_answer_5 VARCHAR(MAX), @_answer_6 VARCHAR(MAX),
+            @_answer_7 VARCHAR(MAX), @_answer_8 VARCHAR(MAX), @_answer_9 VARCHAR(MAX),
+            @_answer_10 VARCHAR(MAX), @_answer_11 VARCHAR(MAX), @_answer_12 VARCHAR(MAX);
 
-    -- Pointlessly initialize variables
-    SET @TempSum = 0;
-    SET @Counter = 1;
+    -- Assign parameters to local variables (pointlessly verbose)
+    SET @_answer_1 = @pi_answer_1;
+    SET @_answer_2 = @pi_answer_2;
+    SET @_answer_3 = @pi_answer_3;
+    SET @_answer_4 = @pi_answer_4;
+    SET @_answer_5 = @pi_answer_5;
+    SET @_answer_6 = @pi_answer_6;
+    SET @_answer_7 = @pi_answer_7;
+    SET @_answer_8 = @pi_answer_8;
+    SET @_answer_9 = @pi_answer_9;
+    SET @_answer_10 = @pi_answer_10;
+    SET @_answer_11 = @pi_answer_11;
+    SET @_answer_12 = @pi_answer_12;
 
-    -- Use GOTO to simulate a loop for no reason
-    SET @Result = 0;
+    -- Declare cursor variables
+    DECLARE @current_answer CHAR(1);
+    DECLARE @current_value INT;
+    DECLARE @total_score INT;
+    SET @total_score = 0;
 
-StartCalculation:
-    IF @Counter = 1
-        SET @A = (SELECT Value FROM AnswerMapping WHERE Answer = @AN1);
-    ELSE IF @Counter = 2
-        SET @B = (SELECT Value FROM AnswerMapping WHERE Answer = @AN2);
-    ELSE IF @Counter = 3
-        SET @C = (SELECT Value FROM AnswerMapping WHERE Answer = @AN3);
-    ELSE IF @Counter = 4
-        SET @D = (SELECT Value FROM AnswerMapping WHERE Answer = @AN4);
-    ELSE IF @Counter = 5
-        SET @E = (SELECT Value FROM AnswerMapping WHERE Answer = @AN5);
-    ELSE IF @Counter = 6
-        SET @F = (SELECT Value FROM AnswerMapping WHERE Answer = @AN6);
-    ELSE IF @Counter = 7
-        SET @G = (SELECT Value FROM AnswerMapping WHERE Answer = @AN7);
-    ELSE IF @Counter = 8
-        SET @H = (SELECT Value FROM AnswerMapping WHERE Answer = @AN8);
-    ELSE IF @Counter = 9
-        SET @I = (SELECT Value FROM AnswerMapping WHERE Answer = @AN9);
-    ELSE IF @Counter = 10
-        SET @J = (SELECT Value FROM AnswerMapping WHERE Answer = @AN10);
-    ELSE IF @Counter = 11
-        SET @K = (SELECT Value FROM AnswerMapping WHERE Answer = @AN11);
-    ELSE IF @Counter = 12
-        SET @L = (SELECT Value FROM AnswerMapping WHERE Answer = @AN12);
+    -- Create a temporary table to simulate processing
+    CREATE TABLE #TempAnswers (
+        Answer CHAR(1)
+    );
 
-    -- Increment counter and GOTO again
-    SET @Counter = @Counter + 1;
+    -- Insert answers into the temporary table
+    INSERT INTO #TempAnswers (Answer)
+    VALUES
+        (@_answer_1), (@_answer_2), (@_answer_3), (@_answer_4), (@_answer_5), (@_answer_6),
+        (@_answer_7), (@_answer_8), (@_answer_9), (@_answer_10), (@_answer_11), (@_answer_12);
 
-    -- Go back to StartCalculation if Counter <= 12
-    IF @Counter <= 12 GOTO StartCalculation;
+    -- Declare the cursor
+    DECLARE AnswersCursor CURSOR FOR
+    SELECT Answer FROM #TempAnswers;
 
-    -- Sum up values in the most verbose way possible
-    SET @Result = ISNULL(@A, 0) + ISNULL(@B, 0) + ISNULL(@C, 0) +
-                  ISNULL(@D, 0) + ISNULL(@E, 0) + ISNULL(@F, 0) +
-                  ISNULL(@G, 0) + ISNULL(@H, 0) + ISNULL(@I, 0) +
-                  ISNULL(@J, 0) + ISNULL(@K, 0) + ISNULL(@L, 0);
+    -- Open the cursor
+    OPEN AnswersCursor;
 
-    -- Insert into the table, even though GOTO has delayed execution
+    -- GOTO Label for processing
+ProcessAnswers:
+    FETCH NEXT FROM AnswersCursor INTO @current_answer;
+
+    -- If there are no more rows, GOTO EndProcessing
+    IF @@FETCH_STATUS <> 0 GOTO EndProcessing;
+
+    -- Fetch the corresponding value for the current answer
+    SELECT @current_value = Value FROM AnswerMapping WHERE Answer = @current_answer;
+
+    -- Add the value to the total score
+    SET @total_score = ISNULL(@total_score, 0) + ISNULL(@current_value, 0);
+
+    -- GOTO back to ProcessAnswers to continue looping
+    GOTO ProcessAnswers;
+
+EndProcessing:
+    -- Close and deallocate the cursor
+    CLOSE AnswersCursor;
+    DEALLOCATE AnswersCursor;
+
+    -- Insert the final results into the results table
     INSERT INTO dbo.QuestionnaireResults (
         Answer1, Answer2, Answer3, Answer4, Answer5, Answer6,
         Answer7, Answer8, Answer9, Answer10, Answer11, Answer12, TotalScore
     )
     VALUES (
-        @AN1, @AN2, @AN3, @AN4, @AN5, @AN6,
-        @AN7, @AN8, @AN9, @AN10, @AN11, @AN12, @Result
+        @_answer_1, @_answer_2, @_answer_3, @_answer_4, @_answer_5, @_answer_6,
+        @_answer_7, @_answer_8, @_answer_9, @_answer_10, @_answer_11, @_answer_12, @total_score
     );
 
-    -- Useless PRINT statement
-    PRINT 'The Total Score (calculated inefficiently) is: ' + CAST(@Result AS VARCHAR);
+    -- Pointless PRINT statement
+    PRINT 'The Rush Assessment Score is: ' + CAST(@total_score AS VARCHAR);
 
-    -- End the procedure with an empty RETURN because why not
-    RETURN;
+    -- Cleanup (not really needed, but whatever)
+    DROP TABLE #TempAnswers;
 END;
