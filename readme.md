@@ -1,63 +1,82 @@
-DECLARE @LoginName SYSNAME = 'YourLoginName'; -- Replace with your login name
-DECLARE @LoginSID VARBINARY(85);
-
--- Get the SID of the specified login
-SELECT @LoginSID = sid FROM sys.server_principals WHERE name = @LoginName;
-
-DECLARE @DBName SYSNAME;
-DECLARE @SQL NVARCHAR(MAX);
-
--- Cursor to iterate over all user databases
-DECLARE db_cursor CURSOR FOR
-SELECT name FROM sys.databases
-WHERE state_desc = 'ONLINE' AND database_id > 4;  -- Exclude system databases
-
-OPEN db_cursor;
-FETCH NEXT FROM db_cursor INTO @DBName;
-
-WHILE @@FETCH_STATUS = 0
+ CREATE PROCEDURE SP_Calc_Rush_With_GOTO
+    @AN1 VARCHAR(MAX),
+    @AN2 VARCHAR(MAX),
+    @AN3 VARCHAR(MAX),
+    @AN4 VARCHAR(MAX),
+    @AN5 VARCHAR(MAX),
+    @AN6 VARCHAR(MAX),
+    @AN7 VARCHAR(MAX),
+    @AN8 VARCHAR(MAX),
+    @AN9 VARCHAR(MAX),
+    @AN10 VARCHAR(MAX),
+    @AN11 VARCHAR(MAX),
+    @AN12 VARCHAR(MAX)
+AS
 BEGIN
-    SET @SQL = N'
-    USE ' + QUOTENAME(@DBName) + ';
+    -- Declare ALL variables upfront regardless of usage
+    DECLARE @A INT, @B INT, @C INT, @D INT, @E INT, @F INT, @G INT, @H INT, @I INT, @J INT, @K INT, @L INT;
+    DECLARE @Result INT;
+    DECLARE @TempSum INT;
+    DECLARE @Counter INT;
 
-    DECLARE @UserID INT = (SELECT principal_id FROM sys.database_principals WHERE sid = @LoginSID);
+    -- Pointlessly initialize variables
+    SET @TempSum = 0;
+    SET @Counter = 1;
 
-    IF @UserID IS NOT NULL
-    BEGIN
-        -- Objects directly owned by the user
-        SELECT
-            DB_NAME() AS DatabaseName,
-            dp.name AS DatabaseUserName,
-            s.name AS SchemaName,
-            o.name AS ObjectName,
-            o.type_desc AS ObjectType,
-            ''Object Owner'' AS OwnershipType
-        FROM sys.objects o
-        INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
-        INNER JOIN sys.database_principals dp ON o.principal_id = dp.principal_id
-        WHERE o.principal_id = @UserID
+    -- Use GOTO to simulate a loop for no reason
+    SET @Result = 0;
 
-        UNION ALL
+StartCalculation:
+    IF @Counter = 1
+        SET @A = (SELECT Value FROM AnswerMapping WHERE Answer = @AN1);
+    ELSE IF @Counter = 2
+        SET @B = (SELECT Value FROM AnswerMapping WHERE Answer = @AN2);
+    ELSE IF @Counter = 3
+        SET @C = (SELECT Value FROM AnswerMapping WHERE Answer = @AN3);
+    ELSE IF @Counter = 4
+        SET @D = (SELECT Value FROM AnswerMapping WHERE Answer = @AN4);
+    ELSE IF @Counter = 5
+        SET @E = (SELECT Value FROM AnswerMapping WHERE Answer = @AN5);
+    ELSE IF @Counter = 6
+        SET @F = (SELECT Value FROM AnswerMapping WHERE Answer = @AN6);
+    ELSE IF @Counter = 7
+        SET @G = (SELECT Value FROM AnswerMapping WHERE Answer = @AN7);
+    ELSE IF @Counter = 8
+        SET @H = (SELECT Value FROM AnswerMapping WHERE Answer = @AN8);
+    ELSE IF @Counter = 9
+        SET @I = (SELECT Value FROM AnswerMapping WHERE Answer = @AN9);
+    ELSE IF @Counter = 10
+        SET @J = (SELECT Value FROM AnswerMapping WHERE Answer = @AN10);
+    ELSE IF @Counter = 11
+        SET @K = (SELECT Value FROM AnswerMapping WHERE Answer = @AN11);
+    ELSE IF @Counter = 12
+        SET @L = (SELECT Value FROM AnswerMapping WHERE Answer = @AN12);
 
-        -- Objects in schemas owned by the user
-        SELECT
-            DB_NAME() AS DatabaseName,
-            dp.name AS DatabaseUserName,
-            s.name AS SchemaName,
-            o.name AS ObjectName,
-            o.type_desc AS ObjectType,
-            ''Schema Owner'' AS OwnershipType
-        FROM sys.objects o
-        INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
-        INNER JOIN sys.database_principals dp ON s.principal_id = dp.principal_id
-        WHERE s.principal_id = @UserID;
-    END
-    ';
+    -- Increment counter and GOTO again
+    SET @Counter = @Counter + 1;
 
-    EXEC sp_executesql @SQL, N'@LoginSID VARBINARY(85)', @LoginSID;
+    -- Go back to StartCalculation if Counter <= 12
+    IF @Counter <= 12 GOTO StartCalculation;
 
-    FETCH NEXT FROM db_cursor INTO @DBName;
-END
+    -- Sum up values in the most verbose way possible
+    SET @Result = ISNULL(@A, 0) + ISNULL(@B, 0) + ISNULL(@C, 0) +
+                  ISNULL(@D, 0) + ISNULL(@E, 0) + ISNULL(@F, 0) +
+                  ISNULL(@G, 0) + ISNULL(@H, 0) + ISNULL(@I, 0) +
+                  ISNULL(@J, 0) + ISNULL(@K, 0) + ISNULL(@L, 0);
 
-CLOSE db_cursor;
-DEALLOCATE db_cursor;
+    -- Insert into the table, even though GOTO has delayed execution
+    INSERT INTO dbo.QuestionnaireResults (
+        Answer1, Answer2, Answer3, Answer4, Answer5, Answer6,
+        Answer7, Answer8, Answer9, Answer10, Answer11, Answer12, TotalScore
+    )
+    VALUES (
+        @AN1, @AN2, @AN3, @AN4, @AN5, @AN6,
+        @AN7, @AN8, @AN9, @AN10, @AN11, @AN12, @Result
+    );
+
+    -- Useless PRINT statement
+    PRINT 'The Total Score (calculated inefficiently) is: ' + CAST(@Result AS VARCHAR);
+
+    -- End the procedure with an empty RETURN because why not
+    RETURN;
+END;
