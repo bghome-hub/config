@@ -9,7 +9,7 @@ CREATE TABLE dbo.IC_Import_Staging (
     Description   VARCHAR(30)
 );
 
-/* Audit log for historical tracking and SQL Agent job monitoring */
+/* Audit log for historical tracking */
 DROP TABLE IF EXISTS dbo.IC_Import_HeaderLog;
 
 CREATE TABLE dbo.IC_Import_HeaderLog (
@@ -25,12 +25,6 @@ CREATE TABLE dbo.IC_Import_HeaderLog (
     ErrorMessage     VARCHAR(MAX)
 );
 GO
-
-
-
-
-
-
 
 
 
@@ -77,10 +71,6 @@ GO
 
 
 
-
-
-
-
 CREATE PROCEDURE dbo.usp_ICImport_ValidateData
     @IsDataValid           BIT OUTPUT,
     @ValidationErrorMessage VARCHAR(255) OUTPUT
@@ -89,7 +79,7 @@ BEGIN
     SET NOCOUNT ON;
     SET @IsDataValid = 1;
 
-    /* Verify staging data exists */
+    /* 1. Verify staging data exists */
     IF NOT EXISTS (SELECT 1 FROM dbo.IC_Import_Staging)
     BEGIN
         SET @IsDataValid = 0;
@@ -97,7 +87,7 @@ BEGIN
         RETURN;
     END
 
-    /* Ensure exactly two companies are present */
+    /* 2. Ensure exactly two companies are present */
     DECLARE @DistinctCompanyCount INT;
     SELECT @DistinctCompanyCount = COUNT(DISTINCT CompanyID) FROM dbo.IC_Import_Staging;
 
@@ -108,9 +98,7 @@ BEGIN
         RETURN;
     END
 
-    /* -----------------------------------------------------
-       INTERCOMPANY RELATIONSHIP CHECK (IC40100)
-       ----------------------------------------------------- */
+    /* 3. Check Intercompany Relationship (IC40100) */
     DECLARE @PrimaryCompanyID   VARCHAR(5);
     DECLARE @SecondaryCompanyID VARCHAR(5);
 
@@ -119,7 +107,7 @@ BEGIN
         @SecondaryCompanyID = MAX(CompanyID) 
     FROM dbo.IC_Import_Staging;
 
-    /* Logic: Verify relationship exists in DYNAMICS..IC40100 */
+    /* Verify relationship exists in either direction using LEFT(5) for safety */
     IF NOT EXISTS (
         SELECT 1 
         FROM DYNAMICS..IC40100 
@@ -132,7 +120,7 @@ BEGIN
         RETURN;
     END
 
-    /* Check for zero balance */
+    /* 4. Check for zero balance */
     IF (SELECT SUM(Amount) FROM dbo.IC_Import_Staging) <> 0
     BEGIN
         SET @IsDataValid = 0;
@@ -156,7 +144,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    /* Declare Orchestration Variables */
+    /* Orchestration Variables */
     DECLARE @AuditLogID              INT;
     DECLARE @IsDataValid             BIT;
     DECLARE @ValidationErrorMessage  VARCHAR(255);
@@ -164,7 +152,7 @@ BEGIN
     DECLARE @eConnectErrorState      INT = 0;
     DECLARE @eConnectErrorString     VARCHAR(255);
 
-    /* Declare Cursor Context Variables */
+    /* Cursor Context Variables */
     DECLARE @CurrentRowCompany       VARCHAR(5);
     DECLARE @CurrentRowAccount       VARCHAR(75);
     DECLARE @CurrentRowAmount        DECIMAL(19, 5);
@@ -173,17 +161,17 @@ BEGIN
     DECLARE @CalculatedDebitAmount   DECIMAL(19, 5);
     DECLARE @CalculatedCreditAmount  DECIMAL(19, 5);
 
-    /* Declare Summary Variables */
+    /* Summary Variables */
     DECLARE @TotalDebitVolume        DECIMAL(19, 5);
     DECLARE @TotalLineCount          INT;
     DECLARE @PrimaryCompanyID        VARCHAR(5);
     DECLARE @SecondaryCompanyID      VARCHAR(5);
 
     BEGIN TRY
-        /* Initial staging cleanup */
+        /* Clean zero-amount records immediately */
         DELETE FROM dbo.IC_Import_Staging WHERE Amount = 0;
 
-        /* Step 1: Validate Staging Data and IC40100 Link */
+        /* Step 1: Validate Data */
         EXEC dbo.usp_ICImport_ValidateData 
             @IsDataValid           = @IsDataValid OUTPUT, 
             @ValidationErrorMessage = @ValidationErrorMessage OUTPUT;
@@ -225,7 +213,7 @@ BEGIN
             RAISERROR('eConnect Error: JE Number Retrieval Failed.', 16, 1);
         END
 
-        /* Step 5: Process Lines */
+        /* Step 5: Process Lines (Transaction Scope) */
         BEGIN TRANSACTION;
 
         DECLARE cur_TransactionLines CURSOR LOCAL FAST_FORWARD FOR 
@@ -244,10 +232,10 @@ BEGIN
                 @I_vBACHNUMB       = 'IC_IMPORT', 
                 @I_vJRNENTRY       = @NextJournalEntryNumber, 
                 @I_vACTNUMST       = @CurrentRowAccount,
-                @I_vDEBITAMT       = @CalculatedDebitAmount,
-                @I_vCRDTAMT        = @CalculatedCreditAmount,
+                @I_vDEBITAMT       = @CalculatedDebitAmount, 
+                @I_vCRDTAMNT       = @CalculatedCreditAmount, /* Note: CRDTAMNT (with N) */
                 @I_vTRXDATE        = @CurrentRowDate, 
-                @I_vDSCRIPTN       = @CurrentRowDescription, 
+                @I_vDSCRIPTN       = @CurrentRowDescription,  /* Note: DSCRIPTN (not REFERENCE) */
                 @I_vINTERID        = @CurrentRowCompany, 
                 @I_vICMSOPROCEDURE = 1,
                 @O_iErrorState     = @eConnectErrorState OUTPUT, 
@@ -265,7 +253,7 @@ BEGIN
         EXEC dbo.taGLTransactionHeaderInsert
             @I_vBACHNUMB   = 'IC_IMPORT', 
             @I_vJRNENTRY   = @NextJournalEntryNumber, 
-            @I_vREFRENCE   = 'Intercompany Import',
+            @I_vREFRENCE   = 'Intercompany Import', /* Note: REFRENCE (Header only) */
             @I_vTRXDATE    = @CurrentRowDate, 
             @I_vTRXTYPE    = 2, 
             @I_vSOURCDOC   = 'GJ',
@@ -288,9 +276,15 @@ BEGIN
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-        IF CURSOR_STATUS('local', 'cur_TransactionLines') >= 0 BEGIN CLOSE cur_TransactionLines; DEALLOCATE cur_TransactionLines; END
+
+        IF CURSOR_STATUS('local', 'cur_TransactionLines') >= 0 
+        BEGIN 
+            CLOSE cur_TransactionLines; 
+            DEALLOCATE cur_TransactionLines; 
+        END
         
         SET @eConnectErrorString = ERROR_MESSAGE();
+        
         IF @AuditLogID IS NOT NULL
         BEGIN
             EXEC dbo.usp_ICImport_UpdateLog 
