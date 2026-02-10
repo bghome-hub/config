@@ -1,3 +1,6 @@
+/* This procedure handles the business logic validation before any GP tables are touched. */
+
+SQL
 CREATE PROCEDURE dbo.usp_ICImport_ValidateData
     @IsDataValid           BIT OUTPUT,
     @ValidationErrorMessage VARCHAR(255) OUTPUT
@@ -6,7 +9,7 @@ BEGIN
     SET NOCOUNT ON;
     SET @IsDataValid = 1;
 
-    -- Check if staging has data
+    /* Check if staging has data */
     IF NOT EXISTS (SELECT 1 FROM dbo.IC_Import_Staging)
     BEGIN
         SET @IsDataValid = 0;
@@ -14,7 +17,7 @@ BEGIN
         RETURN;
     END
 
-    -- Check for exactly two companies
+    /* Check for exactly two companies */
     DECLARE @DistinctCompanyCount INT;
     SELECT @DistinctCompanyCount = COUNT(DISTINCT CompanyID) FROM dbo.IC_Import_Staging;
 
@@ -25,7 +28,7 @@ BEGIN
         RETURN;
     END
 
-    -- Check Intercompany Relationship in SY04300
+    /* Check Intercompany Relationship in SY04300 */
     DECLARE @CurrentDatabaseID VARCHAR(5) = DB_NAME();
     DECLARE @TargetCompanyID   VARCHAR(5);
 
@@ -45,7 +48,7 @@ BEGIN
         RETURN;
     END
 
-    -- Check for zero balance
+    /* Check for zero balance */
     IF (SELECT SUM(Amount) FROM dbo.IC_Import_Staging) <> 0
     BEGIN
         SET @IsDataValid = 0;
@@ -55,7 +58,7 @@ BEGIN
 END
 GO
 2. The Logging Procedure
-Standardizes how we write to the HeaderLog.
+/* Handles all audit trail updates using block comments for safety. */
 
 SQL
 CREATE PROCEDURE dbo.usp_ICImport_UpdateLog
@@ -72,8 +75,18 @@ BEGIN
 
     IF @AuditLogID IS NULL
     BEGIN
-        INSERT INTO dbo.IC_Import_HeaderLog (FileName, Status, TotalAmount, RowCountAffected)
-        VALUES (@FileName, @Status, @TotalDebitVolume, @TotalLineCount);
+        INSERT INTO dbo.IC_Import_HeaderLog (
+            FileName, 
+            Status, 
+            TotalAmount, 
+            RowCountAffected
+        )
+        VALUES (
+            @FileName, 
+            @Status, 
+            @TotalDebitVolume, 
+            @TotalLineCount
+        );
         SET @AuditLogID = SCOPE_IDENTITY();
     END
     ELSE
@@ -87,7 +100,7 @@ BEGIN
 END
 GO
 3. The Main Orchestrator
-Uses taGetNextJournalEntry, full variable names, and vertical formatting.
+/* The primary engine for the import process. Uses block comments and vertical alignment. */
 
 SQL
 CREATE PROCEDURE dbo.usp_ProcessICImport
@@ -96,7 +109,9 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- Variables
+    /* -----------------------------------------------------
+       1. DECLARE ALL VARIABLES
+       ----------------------------------------------------- */
     DECLARE @AuditLogID              INT;
     DECLARE @IsDataValid             BIT;
     DECLARE @ValidationErrorMessage  VARCHAR(255);
@@ -104,7 +119,7 @@ BEGIN
     DECLARE @eConnectErrorState      INT = 0;
     DECLARE @eConnectErrorString     VARCHAR(255);
 
-    -- Cursor Variables
+    /* Cursor Variables */
     DECLARE @CurrentRowCompany       VARCHAR(5);
     DECLARE @CurrentRowAccount       VARCHAR(75);
     DECLARE @CurrentRowAmount        DECIMAL(19, 5);
@@ -113,15 +128,17 @@ BEGIN
     DECLARE @CalculatedDebitAmount   DECIMAL(19, 5);
     DECLARE @CalculatedCreditAmount  DECIMAL(19, 5);
 
-    -- Summary Variables
+    /* Summary Variables */
     DECLARE @TotalDebitVolume        DECIMAL(19, 5);
     DECLARE @TotalLineCount          INT;
     DECLARE @PrimaryCompanyID        VARCHAR(5);
     DECLARE @SecondaryCompanyID      VARCHAR(5);
 
     BEGIN TRY
+        /* Clean zero-amount records */
         DELETE FROM dbo.IC_Import_Staging WHERE Amount = 0;
 
+        /* Call Validation */
         EXEC dbo.usp_ICImport_ValidateData 
             @IsDataValid           = @IsDataValid OUTPUT, 
             @ValidationErrorMessage = @ValidationErrorMessage OUTPUT;
@@ -133,13 +150,23 @@ BEGIN
                 @FileName               = @FileName, 
                 @Status                 = 'ERROR', 
                 @ValidationErrorMessage = @ValidationErrorMessage;
+
             RAISERROR(@ValidationErrorMessage, 16, 1);
             RETURN;
         END
 
-        SELECT @TotalDebitVolume = SUM(CASE WHEN Amount > 0 THEN Amount ELSE 0 END), @TotalLineCount = COUNT(*) FROM dbo.IC_Import_Staging;
-        SELECT @PrimaryCompanyID = MIN(CompanyID), @SecondaryCompanyID = MAX(CompanyID) FROM dbo.IC_Import_Staging;
+        /* Calculate Audit Stats */
+        SELECT 
+            @TotalDebitVolume = SUM(CASE WHEN Amount > 0 THEN Amount ELSE 0 END), 
+            @TotalLineCount   = COUNT(*) 
+        FROM dbo.IC_Import_Staging;
 
+        SELECT 
+            @PrimaryCompanyID   = MIN(CompanyID), 
+            @SecondaryCompanyID = MAX(CompanyID) 
+        FROM dbo.IC_Import_Staging;
+
+        /* Initial Log Entry */
         EXEC dbo.usp_ICImport_UpdateLog 
             @AuditLogID       = @AuditLogID OUTPUT, 
             @FileName         = @FileName, 
@@ -147,18 +174,44 @@ BEGIN
             @TotalDebitVolume = @TotalDebitVolume, 
             @TotalLineCount   = @TotalLineCount;
         
-        UPDATE dbo.IC_Import_HeaderLog SET CompanyA = @PrimaryCompanyID, CompanyB = @SecondaryCompanyID WHERE LogID = @AuditLogID;
+        UPDATE dbo.IC_Import_HeaderLog 
+        SET CompanyA = @PrimaryCompanyID, 
+            CompanyB = @SecondaryCompanyID 
+        WHERE LogID = @AuditLogID;
 
+        /* Get JE Number from eConnect Native Proc */
         EXEC dbo.taGetNextJournalEntry 
             @I_vBatchNumber        = 'IC_IMPORT',
             @O_vJournalEntryNumber = @NextJournalEntryNumber OUTPUT,
             @O_iErrorState         = @eConnectErrorState OUTPUT;
 
+        IF @eConnectErrorState <> 0 OR @NextJournalEntryNumber IS NULL
+        BEGIN
+            RAISERROR('eConnect Error: Failed to retrieve the next Journal Entry number.', 16, 1);
+        END
+
+        /* -----------------------------------------------------
+           2. BEGIN TRANSACTION & PROCESS LINES
+           ----------------------------------------------------- */
         BEGIN TRANSACTION;
 
-        DECLARE cur_TransactionLines CURSOR LOCAL FAST_FORWARD FOR SELECT CompanyID, AccountNumber, Amount, TransDate, Description FROM dbo.IC_Import_Staging;
+        DECLARE cur_TransactionLines CURSOR LOCAL FAST_FORWARD FOR 
+        SELECT 
+            CompanyID, 
+            AccountNumber, 
+            Amount, 
+            TransDate, 
+            Description 
+        FROM dbo.IC_Import_Staging;
+
         OPEN cur_TransactionLines;
-        FETCH NEXT FROM cur_TransactionLines INTO @CurrentRowCompany, @CurrentRowAccount, @CurrentRowAmount, @CurrentRowDate, @CurrentRowDescription;
+
+        FETCH NEXT FROM cur_TransactionLines INTO 
+            @CurrentRowCompany, 
+            @CurrentRowAccount, 
+            @CurrentRowAmount, 
+            @CurrentRowDate, 
+            @CurrentRowDescription;
 
         WHILE @@FETCH_STATUS = 0
         BEGIN
@@ -186,30 +239,71 @@ BEGIN
                 @O_iErrorState     = @eConnectErrorState OUTPUT, 
                 @oErrString        = @eConnectErrorString OUTPUT;
 
-            IF @eConnectErrorState <> 0 RAISERROR(@eConnectErrorString, 16, 1);
-            FETCH NEXT FROM cur_TransactionLines INTO @CurrentRowCompany, @CurrentRowAccount, @CurrentRowAmount, @CurrentRowDate, @CurrentRowDescription;
+            IF @eConnectErrorState <> 0
+            BEGIN
+                RAISERROR(@eConnectErrorString, 16, 1);
+            END
+
+            FETCH NEXT FROM cur_TransactionLines INTO 
+                @CurrentRowCompany, 
+                @CurrentRowAccount, 
+                @CurrentRowAmount, 
+                @CurrentRowDate, 
+                @CurrentRowDescription;
         END
-        CLOSE cur_TransactionLines; DEALLOCATE cur_TransactionLines;
 
+        CLOSE cur_TransactionLines; 
+        DEALLOCATE cur_TransactionLines;
+
+        /* Finalize Header */
         EXEC dbo.taGLTransactionHeaderInsert
-            @I_vBACHNUMB   = 'IC_IMPORT', @I_vJRNENTRY = @NextJournalEntryNumber, @I_vREFRENCE = 'IC Import',
-            @I_vTRXDATE    = @CurrentRowDate, @I_vTRXTYPE = 2, @I_vSOURCDOC = 'GJ',
-            @O_iErrorState = @eConnectErrorState OUTPUT, @oErrString = @eConnectErrorString OUTPUT;
+            @I_vBACHNUMB   = 'IC_IMPORT', 
+            @I_vJRNENTRY   = @NextJournalEntryNumber, 
+            @I_vREFRENCE   = 'Intercompany Import',
+            @I_vTRXDATE    = @CurrentRowDate, 
+            @I_vTRXTYPE    = 2, 
+            @I_vSOURCDOC   = 'GJ',
+            @O_iErrorState = @eConnectErrorState OUTPUT, 
+            @oErrString    = @eConnectErrorString OUTPUT;
 
-        IF @eConnectErrorState <> 0 RAISERROR(@eConnectErrorString, 16, 1);
+        IF @eConnectErrorState <> 0
+        BEGIN
+            RAISERROR(@eConnectErrorString, 16, 1);
+        END
 
         COMMIT TRANSACTION;
 
-        EXEC dbo.usp_ICImport_UpdateLog @AuditLogID = @AuditLogID, @FileName = @FileName, @Status = 'SUCCESS', @NextJournalEntryNumber = @NextJournalEntryNumber;
+        /* Success Logging */
+        EXEC dbo.usp_ICImport_UpdateLog 
+            @AuditLogID             = @AuditLogID, 
+            @FileName               = @FileName, 
+            @Status                 = 'SUCCESS', 
+            @NextJournalEntryNumber = @NextJournalEntryNumber;
+
         TRUNCATE TABLE dbo.IC_Import_Staging;
 
     END TRY
     BEGIN CATCH
+        /* Error Handling and Rollback */
         IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-        IF CURSOR_STATUS('local', 'cur_TransactionLines') >= 0 BEGIN CLOSE cur_TransactionLines; DEALLOCATE cur_TransactionLines; END
-        
+
+        IF CURSOR_STATUS('local', 'cur_TransactionLines') >= 0
+        BEGIN
+            CLOSE cur_TransactionLines;
+            DEALLOCATE cur_TransactionLines;
+        END
+
         SET @eConnectErrorString = ERROR_MESSAGE();
-        IF @AuditLogID IS NOT NULL EXEC dbo.usp_ICImport_UpdateLog @AuditLogID = @AuditLogID, @FileName = @FileName, @Status = 'ERROR', @ValidationErrorMessage = @eConnectErrorString;
+
+        IF @AuditLogID IS NOT NULL
+        BEGIN
+            EXEC dbo.usp_ICImport_UpdateLog 
+                @AuditLogID             = @AuditLogID, 
+                @FileName               = @FileName, 
+                @Status                 = 'ERROR', 
+                @ValidationErrorMessage = @eConnectErrorString;
+        END
+
         RAISERROR(@eConnectErrorString, 16, 1);
     END CATCH
 END
