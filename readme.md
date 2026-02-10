@@ -27,6 +27,11 @@ CREATE TABLE dbo.IC_Import_HeaderLog (
 GO
 
 
+
+
+
+
+
 CREATE PROCEDURE dbo.usp_ICImport_UpdateLog
     @AuditLogID              INT OUTPUT,
     @FileName                VARCHAR(255),
@@ -65,6 +70,10 @@ BEGIN
     END
 END
 GO
+
+
+
+
 
 
 
@@ -129,6 +138,7 @@ BEGIN
     END
 END
 GO
+
 
 
 
@@ -208,7 +218,7 @@ BEGIN
             CompanyB = @SecondaryCompanyID 
         WHERE LogID = @AuditLogID;
 
-        /* Step 4: Reserve the Next Journal Entry Number from eConnect */
+        /* Step 4: Reserve the Next Journal Entry Number */
         EXEC dbo.taGetNextJournalEntry 
             @I_vBatchNumber        = 'IC_IMPORT',
             @O_vJournalEntryNumber = @NextJournalEntryNumber OUTPUT,
@@ -256,7 +266,18 @@ BEGIN
                 SET @CalculatedCreditAmount = ABS(@CurrentRowAmount);
             END
 
-            /* Call eConnect for the individual line */
+            /* -----------------------------------------------------
+               taGLTransactionLineInsert Parameter Check:
+               @I_vBACHNUMB       - char(15)
+               @I_vJRNENTRY       - int
+               @I_vACTNUMST       - char(75)
+               @I_vDEBITAMT       - numeric(19,5)
+               @I_vCRDTAMT        - numeric(19,5)
+               @I_vTRXDATE        - datetime
+               @I_vDSCRIPTN       - char(30)
+               @I_vINTERID        - char(5)
+               @I_vICMSOPROCEDURE - smallint
+               ----------------------------------------------------- */
             EXEC dbo.taGLTransactionLineInsert 
                 @I_vBACHNUMB       = 'IC_IMPORT', 
                 @I_vJRNENTRY       = @NextJournalEntryNumber, 
@@ -264,7 +285,7 @@ BEGIN
                 @I_vDEBITAMT       = @CalculatedDebitAmount,
                 @I_vCRDTAMT        = @CalculatedCreditAmount,
                 @I_vTRXDATE        = @CurrentRowDate, 
-                @I_vREFRENCE       = @CurrentRowDescription, 
+                @I_vDSCRIPTN       = @CurrentRowDescription, 
                 @I_vINTERID        = @CurrentRowCompany, 
                 @I_vICMSOPROCEDURE = 1,
                 @O_iErrorState     = @eConnectErrorState OUTPUT, 
@@ -304,7 +325,7 @@ BEGIN
 
         COMMIT TRANSACTION;
 
-        /* Step 7: Final Success Logging and Cleanup */
+        /* Mark audit log as Success and clear staging */
         EXEC dbo.usp_ICImport_UpdateLog 
             @AuditLogID             = @AuditLogID, 
             @FileName               = @FileName, 
