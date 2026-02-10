@@ -1,4 +1,4 @@
-/* Staging table for the initial BULK INSERT from CSV */
+/* Staging table for the BULK INSERT process */
 DROP TABLE IF EXISTS dbo.IC_Import_Staging;
 
 CREATE TABLE dbo.IC_Import_Staging (
@@ -25,6 +25,8 @@ CREATE TABLE dbo.IC_Import_HeaderLog (
     ErrorMessage     VARCHAR(MAX)
 );
 GO
+
+
 
 
 
@@ -77,6 +79,8 @@ GO
 
 
 
+
+
 CREATE PROCEDURE dbo.usp_ICImport_ValidateData
     @IsDataValid           BIT OUTPUT,
     @ValidationErrorMessage VARCHAR(255) OUTPUT
@@ -93,7 +97,7 @@ BEGIN
         RETURN;
     END
 
-    /* Ensure exactly two companies are present in the dataset */
+    /* Ensure exactly two companies are present */
     DECLARE @DistinctCompanyCount INT;
     SELECT @DistinctCompanyCount = COUNT(DISTINCT CompanyID) FROM dbo.IC_Import_Staging;
 
@@ -115,7 +119,7 @@ BEGIN
         @SecondaryCompanyID = MAX(CompanyID) 
     FROM dbo.IC_Import_Staging;
 
-    /* Verify relationship exists in either direction using the 5-character ID */
+    /* Logic: Verify relationship exists in DYNAMICS..IC40100 */
     IF NOT EXISTS (
         SELECT 1 
         FROM DYNAMICS..IC40100 
@@ -124,12 +128,11 @@ BEGIN
     )
     BEGIN
         SET @IsDataValid = 0;
-        SET @ValidationErrorMessage = 'Validation Failed: Relationship not found in DYNAMICS..IC40100 for ' 
-                                      + @PrimaryCompanyID + ' and ' + @SecondaryCompanyID;
+        SET @ValidationErrorMessage = 'Validation Failed: Relationship not found in DYNAMICS..IC40100.';
         RETURN;
     END
 
-    /* Check for zero balance (Debits must equal Credits) */
+    /* Check for zero balance */
     IF (SELECT SUM(Amount) FROM dbo.IC_Import_Staging) <> 0
     BEGIN
         SET @IsDataValid = 0;
@@ -138,6 +141,9 @@ BEGIN
     END
 END
 GO
+
+
+
 
 
 
@@ -174,7 +180,7 @@ BEGIN
     DECLARE @SecondaryCompanyID      VARCHAR(5);
 
     BEGIN TRY
-        /* Remove 0.00 entries from the staging table */
+        /* Initial staging cleanup */
         DELETE FROM dbo.IC_Import_Staging WHERE Amount = 0;
 
         /* Step 1: Validate Staging Data and IC40100 Link */
@@ -195,17 +201,10 @@ BEGIN
         END
 
         /* Step 2: Initialize Audit Stats */
-        SELECT 
-            @TotalDebitVolume = SUM(CASE WHEN Amount > 0 THEN Amount ELSE 0 END), 
-            @TotalLineCount   = COUNT(*) 
-        FROM dbo.IC_Import_Staging;
+        SELECT @TotalDebitVolume = SUM(CASE WHEN Amount > 0 THEN Amount ELSE 0 END), @TotalLineCount = COUNT(*) FROM dbo.IC_Import_Staging;
+        SELECT @PrimaryCompanyID = MIN(CompanyID), @SecondaryCompanyID = MAX(CompanyID) FROM dbo.IC_Import_Staging;
 
-        SELECT 
-            @PrimaryCompanyID   = MIN(CompanyID), 
-            @SecondaryCompanyID = MAX(CompanyID) 
-        FROM dbo.IC_Import_Staging;
-
-        /* Step 3: Create Initial Audit Entry */
+        /* Step 3: Log Processing Start */
         EXEC dbo.usp_ICImport_UpdateLog 
             @AuditLogID       = @AuditLogID OUTPUT, 
             @FileName         = @FileName, 
@@ -213,12 +212,9 @@ BEGIN
             @TotalDebitVolume = @TotalDebitVolume, 
             @TotalLineCount   = @TotalLineCount;
         
-        UPDATE dbo.IC_Import_HeaderLog 
-        SET CompanyA = @PrimaryCompanyID, 
-            CompanyB = @SecondaryCompanyID 
-        WHERE LogID = @AuditLogID;
+        UPDATE dbo.IC_Import_HeaderLog SET CompanyA = @PrimaryCompanyID, CompanyB = @SecondaryCompanyID WHERE LogID = @AuditLogID;
 
-        /* Step 4: Reserve the Next Journal Entry Number */
+        /* Step 4: Get Next JE Number */
         EXEC dbo.taGetNextJournalEntry 
             @I_vBatchNumber        = 'IC_IMPORT',
             @O_vJournalEntryNumber = @NextJournalEntryNumber OUTPUT,
@@ -226,58 +222,24 @@ BEGIN
 
         IF @eConnectErrorState <> 0 OR @NextJournalEntryNumber IS NULL
         BEGIN
-            RAISERROR('eConnect Error: Failed to retrieve the next Journal Entry number.', 16, 1);
+            RAISERROR('eConnect Error: JE Number Retrieval Failed.', 16, 1);
         END
 
-        /* -----------------------------------------------------
-           Step 5: Process Lines within a Transaction
-           ----------------------------------------------------- */
+        /* Step 5: Process Lines */
         BEGIN TRANSACTION;
 
         DECLARE cur_TransactionLines CURSOR LOCAL FAST_FORWARD FOR 
-        SELECT 
-            CompanyID, 
-            AccountNumber, 
-            Amount, 
-            TransDate, 
-            Description 
-        FROM dbo.IC_Import_Staging;
+        SELECT CompanyID, AccountNumber, Amount, TransDate, Description FROM dbo.IC_Import_Staging;
 
         OPEN cur_TransactionLines;
-
-        FETCH NEXT FROM cur_TransactionLines INTO 
-            @CurrentRowCompany, 
-            @CurrentRowAccount, 
-            @CurrentRowAmount, 
-            @CurrentRowDate, 
-            @CurrentRowDescription;
+        FETCH NEXT FROM cur_TransactionLines INTO @CurrentRowCompany, @CurrentRowAccount, @CurrentRowAmount, @CurrentRowDate, @CurrentRowDescription;
 
         WHILE @@FETCH_STATUS = 0
         BEGIN
-            /* Map the Amount column to eConnect Debit/Credit parameters */
-            IF @CurrentRowAmount > 0
-            BEGIN
-                SET @CalculatedDebitAmount  = @CurrentRowAmount;
-                SET @CalculatedCreditAmount = 0;
-            END
-            ELSE
-            BEGIN
-                SET @CalculatedDebitAmount  = 0;
-                SET @CalculatedCreditAmount = ABS(@CurrentRowAmount);
-            END
+            SET @CalculatedDebitAmount  = CASE WHEN @CurrentRowAmount > 0 THEN @CurrentRowAmount ELSE 0 END;
+            SET @CalculatedCreditAmount = CASE WHEN @CurrentRowAmount < 0 THEN ABS(@CurrentRowAmount) ELSE 0 END;
 
-            /* -----------------------------------------------------
-               taGLTransactionLineInsert Parameter Check:
-               @I_vBACHNUMB       - char(15)
-               @I_vJRNENTRY       - int
-               @I_vACTNUMST       - char(75)
-               @I_vDEBITAMT       - numeric(19,5)
-               @I_vCRDTAMT        - numeric(19,5)
-               @I_vTRXDATE        - datetime
-               @I_vDSCRIPTN       - char(30)
-               @I_vINTERID        - char(5)
-               @I_vICMSOPROCEDURE - smallint
-               ----------------------------------------------------- */
+            /* VERIFIED PARAMETERS FOR taGLTransactionLineInsert */
             EXEC dbo.taGLTransactionLineInsert 
                 @I_vBACHNUMB       = 'IC_IMPORT', 
                 @I_vJRNENTRY       = @NextJournalEntryNumber, 
@@ -291,23 +253,15 @@ BEGIN
                 @O_iErrorState     = @eConnectErrorState OUTPUT, 
                 @oErrString        = @eConnectErrorString OUTPUT;
 
-            IF @eConnectErrorState <> 0
-            BEGIN
-                RAISERROR(@eConnectErrorString, 16, 1);
-            END
+            IF @eConnectErrorState <> 0 RAISERROR(@eConnectErrorString, 16, 1);
 
-            FETCH NEXT FROM cur_TransactionLines INTO 
-                @CurrentRowCompany, 
-                @CurrentRowAccount, 
-                @CurrentRowAmount, 
-                @CurrentRowDate, 
-                @CurrentRowDescription;
+            FETCH NEXT FROM cur_TransactionLines INTO @CurrentRowCompany, @CurrentRowAccount, @CurrentRowAmount, @CurrentRowDate, @CurrentRowDescription;
         END
 
         CLOSE cur_TransactionLines; 
         DEALLOCATE cur_TransactionLines;
 
-        /* Step 6: Finalize the transaction header */
+        /* Step 6: Finalize Header */
         EXEC dbo.taGLTransactionHeaderInsert
             @I_vBACHNUMB   = 'IC_IMPORT', 
             @I_vJRNENTRY   = @NextJournalEntryNumber, 
@@ -318,14 +272,11 @@ BEGIN
             @O_iErrorState = @eConnectErrorState OUTPUT, 
             @oErrString    = @eConnectErrorString OUTPUT;
 
-        IF @eConnectErrorState <> 0
-        BEGIN
-            RAISERROR(@eConnectErrorString, 16, 1);
-        END
+        IF @eConnectErrorState <> 0 RAISERROR(@eConnectErrorString, 16, 1);
 
         COMMIT TRANSACTION;
 
-        /* Mark audit log as Success and clear staging */
+        /* Step 7: Final Success Logging */
         EXEC dbo.usp_ICImport_UpdateLog 
             @AuditLogID             = @AuditLogID, 
             @FileName               = @FileName, 
@@ -336,18 +287,10 @@ BEGIN
 
     END TRY
     BEGIN CATCH
-        /* Cleanup: Rollback transaction and close cursor on any failure */
         IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-
-        IF CURSOR_STATUS('local', 'cur_TransactionLines') >= 0
-        BEGIN
-            CLOSE cur_TransactionLines;
-            DEALLOCATE cur_TransactionLines;
-        END
-
+        IF CURSOR_STATUS('local', 'cur_TransactionLines') >= 0 BEGIN CLOSE cur_TransactionLines; DEALLOCATE cur_TransactionLines; END
+        
         SET @eConnectErrorString = ERROR_MESSAGE();
-
-        /* Record the specific error message in the audit log */
         IF @AuditLogID IS NOT NULL
         BEGIN
             EXEC dbo.usp_ICImport_UpdateLog 
@@ -356,8 +299,6 @@ BEGIN
                 @Status                 = 'ERROR', 
                 @ValidationErrorMessage = @eConnectErrorString;
         END
-
-        /* Propagate error for the SQL Agent job visibility */
         RAISERROR(@eConnectErrorString, 16, 1);
     END CATCH
 END
