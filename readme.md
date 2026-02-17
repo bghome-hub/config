@@ -1,32 +1,41 @@
-# 1. CONNECT WITH A STATIC NAMESPACE
-# We verify the namespace is "GP" so we can rely on it later
-$GPService = New-WebServiceProxy -Uri $GPWS_URL -Namespace "GP" -UseDefaultCredential
+# --- <Configuration> ---
+$GPWS_URL        = "http://GPSERVER:48620/Dynamics/GPService.asmx"
+# The ID you found from SQL earlier (e.g. '946306CA-...')
+$WorkflowStepID  = "PASTE_YOUR_GUID_HERE" 
+$ApprovalComment = "Approved via PowerShell"
+# -----------------------
 
-# 2. CREATE THE KEY OBJECT
-# Now we can use [GP.ClassName] instead of the long auto-generated name
-$WfStepKey = New-Object GP.WorkflowStepInstanceKey
-
-# Assign the ID we found from SQL
-$WfStepKey.Id = $WorkflowStepID
-
-# Create and assign the Company Key
-$WfStepKey.CompanyKey = New-Object GP.CompanyKey
-$WfStepKey.CompanyKey.Id = -1 
-
-# 3. DEFINE THE ACTION (APPROVE)
-# We access the Enum directly from our static "GP" namespace
-$CompletionStatus = [GP.WorkflowAction]::Approve
-
-# 4. EXECUTE
 try {
-    $Result = $GPService.CompleteWorkflowTask($WfStepKey, $CompletionStatus, $ApprovalComment)
+    # 1. CONNECT WITH STATIC NAMESPACE
+    $GPService = New-WebServiceProxy -Uri $GPWS_URL -Namespace "GP" -UseDefaultCredential
+
+    # 2. CREATE THE *CORRECT* KEY OBJECT
+    # The method 'CompleteTask' expects a 'WorkflowTaskKey', not a 'StepInstanceKey'
+    $TaskKey = New-Object GP.WorkflowTaskKey
+    $TaskKey.Id = $WorkflowStepID
+    $TaskKey.CompanyKey = New-Object GP.CompanyKey
+    $TaskKey.CompanyKey.Id = -1 
+
+    # 3. DEFINE THE ACTION
+    # We use the static namespace 'GP' to get the Enum
+    $Action = [GP.WorkflowAction]::Approve
+
+    # 4. EXECUTE 'CompleteTask'
+    Write-Host "Attempting to approve using CompleteTask..."
     
-    if ($Result -eq $true) {
-        Write-Host "Success! Batch Approved." -ForegroundColor Green
+    # Signature: CompleteTask(WorkflowTaskKey key, WorkflowAction action, string comment)
+    $Result = $GPService.CompleteTask($TaskKey, $Action, $ApprovalComment)
+    
+    if ($Result) {
+        Write-Host "Success! Task Approved." -ForegroundColor Green
     } else {
-        Write-Host "Command sent, but GP returned false. Check Workflow History." -ForegroundColor Yellow
+        Write-Host "Command sent, but returned false." -ForegroundColor Yellow
     }
-}
-catch {
-    Write-Error "Web Service Call Failed: $_"
+
+} catch {
+    Write-Error "Error: $_"
+    
+    # 5. SELF-DIAGNOSIS (If this fails again)
+    Write-Host "`n--- DEBUG: AVAILABLE METHODS ---" -ForegroundColor Cyan
+    $GPService | Get-Member -MemberType Method | Where-Object { $_.Name -like "*Task*" } | Select-Object Name
 }
