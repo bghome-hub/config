@@ -3,12 +3,25 @@
   <PropertyGroup>
     <DropObjectsNotInSource>False</DropObjectsNotInSource>
     <BlockOnPossibleDataLoss>True</BlockOnPossibleDataLoss>
-    
+
+    <ScriptDatabaseOptions>False</ScriptDatabaseOptions>
+    <ScriptDeployStateChecks>False</ScriptDeployStateChecks>
+
+    <DropIndexesNotInSource>False</DropIndexesNotInSource>
+    <DropStatisticsNotInSource>False</DropStatisticsNotInSource>
+    <IgnoreIndexOptions>True</IgnoreIndexOptions>
+
     <DropPermissionsNotInSource>False</DropPermissionsNotInSource>
     <DropRoleMembersNotInSource>False</DropRoleMembersNotInSource>
     <ExcludePermissions>True</ExcludePermissions>
     <ExcludeUsers>True</ExcludeUsers>
     <ExcludeLogins>True</ExcludeLogins>
     <ExcludeRoleMembership>True</ExcludeRoleMembership>
+    <ExcludeDatabaseRoles>True</ExcludeDatabaseRoles>
+    <IgnorePermissions>True</IgnorePermissions>
+    <IgnoreRoleMembership>True</IgnoreRoleMembership>
+    <IgnoreLoginSids>True</IgnoreLoginSids>
+
+    <DropExtendedPropertiesNotInSource>False</DropExtendedPropertiesNotInSource>
   </PropertyGroup>
 </Project>
