@@ -3,5 +3,12 @@
   <PropertyGroup>
     <DropObjectsNotInSource>False</DropObjectsNotInSource>
     <BlockOnPossibleDataLoss>True</BlockOnPossibleDataLoss>
+    
+    <DropPermissionsNotInSource>False</DropPermissionsNotInSource>
+    <DropRoleMembersNotInSource>False</DropRoleMembersNotInSource>
+    <ExcludePermissions>True</ExcludePermissions>
+    <ExcludeUsers>True</ExcludeUsers>
+    <ExcludeLogins>True</ExcludeLogins>
+    <ExcludeRoleMembership>True</ExcludeRoleMembership>
   </PropertyGroup>
 </Project>
