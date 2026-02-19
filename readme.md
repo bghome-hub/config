@@ -1,22 +1,7 @@
-{
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "Build SQL Project",
-            "command": "dotnet",
-            "type": "process",
-            "args": [
-                "build",
-                "${workspaceFolder}/*.sqlproj"
-            ],
-            "problemMatcher": "$msCompile",
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "presentation": {
-                "reveal": "always"
-            }
-        }
-    ]
-}
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <DropObjectsNotInSource>False</DropObjectsNotInSource>
+    <BlockOnPossibleDataLoss>True</BlockOnPossibleDataLoss>
+  </PropertyGroup>
+</Project>
