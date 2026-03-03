@@ -1,3 +1,562 @@
+
+# ----------------------------
+# UTILITIES
+# ----------------------------
+function Ensure-Directory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -Path $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+<#
+function Write-Log {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [ValidateSet("INFO", "WARN", "ERROR", "SUCCESS")][string]$Level = "INFO"
+    )
+    $entry = "$(Get-Date -Format 'yyyyMMdd HH:mm:ss')[$Level] - $Message"
+    Ensure-Directory -Path (Split-Path -Path $Paths.Log -Parent)
+    $entry | Out-File -FilePath $Paths.Log -Append -Encoding UTF8
+    Write-Host $entry
+}
+#>
+
+
+# Write to log
+function Write-Log{
+    param(
+        [Parameter(Mandatory=$true)]
+        [String]$Message,
+        [switch]$IncludeHeader,
+        [switch]$IncludeFooter
+    )
+
+    $TimeStamp = Get-Date -Format "yyyyMMdd HH:mm:ss"
+    
+    if($IncludeHeader){
+        # Log Username, Clustername, NodeName
+        $User = $env:USERNAME
+        $Hostname = $env:COMPUTERNAME
+        $Node = [System.Environment]::MachineName
+        $LogEntry = "$TimeStamp | User: $User | Hostname: $Hostname | Node: $Node `n$Timestamp | $Message"
+    } else {
+        # Log Message Only
+        $LogEntry = "$TimeStamp | $Message"
+    }
+
+    # Add linebreak
+    if($IncludeFooter){
+        $LogEntry += "`n"
+    }
+
+    Add-Content -Path $Paths.Log -Value $LogEntry
+}
+
+
+
+
+function Move-File {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$DestinationDir
+    )
+    try {
+        Ensure-Directory -Path $DestinationDir
+        $target = Join-Path -Path $DestinationDir -ChildPath (Split-Path -Path $Source -Leaf)
+        return Move-Item -Path $Source -Destination $target -PassThru -Force -ErrorAction Stop
+    }
+    catch {
+        Write-Log "Failed to move file [$Source] to [$DestinationDir]. Error: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Invoke-IntracompanyImportSP {
+    param([Parameter(Mandatory = $true)][string]$CsvFullPath)
+
+    $query = "EXEC $($SQLConfig.ProcName) @CsvPath = N'$CsvFullPath';"
+
+    try {
+
+        $SQLResult = @(Invoke-Sqlcmd -ServerInstance $SQLConfig.server -Database $SQLConfig.database -Query $query -TrustServerCertificate)
+        $JobID = $SQLResult | Select-Object -ExpandProperty JobID
+        if ($null -eq $JobID -or $SQLResult.Count -eq 0) {
+            return "No JobID returned"
+        }
+        else {
+            return $JobID
+        }
+        
+    }
+    catch {
+        Write-Log "SQL/eConnect Error while processing [$CsvFullPath]: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-JobResult {
+    param([Parameter(Mandatory = $true)][string]$JobID)
+  
+    $query = @"
+SELECT TOP 1 JobResult
+FROM dbo.IA_Run
+WHERE JobID = '$JobID'
+ORDER BY StartedDT DESC;
+"@
+ 
+    try {
+        
+        $SQLResult = @(Invoke-Sqlcmd -ServerInstance $SQLConfig.server -Database $SQLConfig.database -Query $query -TrustServerCertificate)
+        $JobResult = $SQLResult | Select-Object -ExpandProperty JobResult
+        if ($null -eq $JobResult -or $SQLResult.Count -eq 0) {        
+            return "No JobResult returned"
+        }
+        else {
+            return $JobResult
+        }
+
+    }
+    catch {
+        Write-Log "Failed to query JobResult for JobID [$JobID]: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+
+<# ================================================ #>
+function New-DynamicsImportJobEmailContent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [Guid]$JobId
+    )
+
+    # --- Configuration (edit for your environment) ---
+    $SqlInstance = $SQLConfig.Server           # e.g. 'SQLPROD01'
+    $DbName      = $SQLConfig.Database   # IA_* tables live here
+    # -------------------------------------------------
+
+    function Invoke-Db {
+        param([string]$Query)
+        $args = @{
+            ServerInstance = $SqlInstance
+            Database       = $DbName
+            Query          = $Query
+            ErrorAction    = 'Stop'
+            TrustServerCertificate = $true
+        }
+       
+        Invoke-Sqlcmd @args
+    }
+
+    function HtmlEncode([string]$s) {
+        if ($null -eq $s) { return '' }
+        return [System.Web.HttpUtility]::HtmlEncode($s)
+    }
+
+    $qRuns = @"
+SELECT
+    r.RunID,
+    r.JobID,
+    r.FileName,
+    r.CompanyA,
+    r.BatchID,
+    r.JournalEntry,
+    r.Reference,
+    r.Status,
+    r.Message,
+    r.StartedDT,
+    r.EndedDT,
+    r.RowCountLine,
+    r.JobResult,
+    r.ReversalFlag,
+    r.TrxDateBasis,
+    TxDate = ISNULL(r.TrxDateBasis, (SELECT MIN(il.TrxDate) FROM [$DbName].dbo.IA_Line il WHERE il.RunID = r.RunID))
+FROM [$DbName].dbo.IA_Run r
+WHERE r.JobID = '$JobId'
+ORDER BY r.StartedDT ASC;
+"@
+
+    try {
+        $runs = Invoke-Db -Query $qRuns
+    } catch {
+        $err = $_.Exception.Message
+        $subject = "Dynamics Import Job (Job ${JobId}) - ERROR"
+        $body = "<html><body><pre>$([System.Web.HttpUtility]::HtmlEncode($err))</pre></body></html>"
+        return [pscustomobject]@{ Subject = $subject; Body = $body }
+    }
+
+    if (-not $runs -or $runs.Count -eq 0) {
+        $subject = "Dynamics Import Job (Job ${JobId}) - 0 Runs, Posted = 0, Failed = 0"
+        $body = @"
+<!doctype html>
+<html><head><meta http-equiv='Content-Type' content='text/html; charset=utf-8'></head>
+<body style="font-family:Segoe UI,Arial,sans-serif;color:#111;padding:12px">
+  <h2 style="margin:0 0 8px 0">Dynamics Import Summary</h2>
+  <div>Filename: <em>(none)</em></div>
+  <div>Result: <strong>ERROR</strong></div>
+  <p style="margin-top:12px">No runs exist for JobID <code>${JobId}</code> in <strong>$DbName</strong>.</p>
+</body></html>
+"@
+        return [pscustomobject]@{ Subject = $subject; Body = $body }
+    }
+
+    # -------------------------
+    # Derive job-level stats
+    # -------------------------
+    $runsCount   = $runs.Count
+    $postedCount = ($runs | Where-Object { $_.Status -eq 'POSTED' }).Count
+    $failedCount = ($runs | Where-Object { $_.Status -eq 'FAILED' }).Count
+
+    $jobResult = ($runs | Select-Object -First 1).JobResult
+    if ([string]::IsNullOrWhiteSpace($jobResult)) {
+        if     ($postedCount -eq $runsCount) { $jobResult = 'SUCCESS' }
+        elseif ($failedCount -eq $runsCount) { $jobResult = 'ERROR' }
+        elseif ($failedCount -gt 0 -and $postedCount -gt 0) { $jobResult = 'PARTIAL' }
+        else { $jobResult = 'IN-PROGRESS' }
+    }
+
+    $filename = $runs | Select-Object -ExpandProperty FileName -Unique
+
+    # -------------------------
+    # Load per-run line items
+    # -------------------------
+    # We’ll build a map: RunID -> DataTable of aggregated lines by Account
+    $linesByRun = @{}
+    foreach ($r in $runs) {
+        $rid = $r.RunID
+        $qLines = @"
+SELECT
+    il.Account,
+    SUM(ISNULL(il.Debit,0))  AS DebitAmt,
+    SUM(ISNULL(il.Credit,0)) AS CreditAmt,
+    SUM(ISNULL(il.Debit,0) - ISNULL(il.Credit,0)) AS NetAmt
+FROM [$DbName].dbo.IA_Line il
+WHERE il.RunID = '$rid'
+GROUP BY il.Account
+HAVING ABS(SUM(ISNULL(il.Debit,0)) + SUM(ISNULL(il.Credit,0))) > 0
+   OR ABS(SUM(ISNULL(il.Debit,0) - ISNULL(il.Credit,0))) > 0.00001
+ORDER BY il.Account;
+"@
+        try {
+            $dt = Invoke-Db -Query $qLines
+        } catch {
+            $dt = @()
+        }
+        $linesByRun[$rid] = $dt
+    }
+
+    # -------------------------
+    # Build HTML (with stylesheet)
+    # -------------------------
+    $subject = "Dynamics Import Job [${fileName}] - ${runsCount} Runs, Posted = ${postedCount} , Failed = ${failedCount}"
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine("<!doctype html>")
+    [void]$sb.AppendLine("<html>")
+    [void]$sb.AppendLine("<head>")
+    [void]$sb.AppendLine("<meta http-equiv='Content-Type' content='text/html; charset=utf-8'/>")
+    [void]$sb.AppendLine("<style type='text/css'>")
+    [void]$sb.AppendLine("body{font-family:Segoe UI,Arial,sans-serif;color:#111;margin:0;padding:12px}")
+    [void]$sb.AppendLine(".h{margin:0 0 8px 0}")
+    [void]$sb.AppendLine(".p{margin:2px 0}")
+    [void]$sb.AppendLine(".badge{display:inline-block;padding:2px 6px;border-radius:10px;font-weight:600;font-size:11px}")
+    [void]$sb.AppendLine(".b-success{background:#e6f4ea;color:#0b6e2f}.b-error{background:#fdecea;color:#b42318}.b-partial{background:#fff8e1;color:#8a5b00}.b-progress{background:#eef3ff;color:#1a4fb5}")
+    [void]$sb.AppendLine("table{border-collapse:collapse;border-spacing:0;mso-table-lspace:0pt;mso-table-rspace:0}")
+    [void]$sb.AppendLine("table.summary{width:100%;table-layout:fixed;border:1px solid #d9d9d9;font-size:11px;line-height:1.1;margin:8px 0 12px 0}")
+    [void]$sb.AppendLine("table.summary th{background:#f3f3f3;padding:2px 6px;text-align:left;font-weight:600;border:0;border-bottom:1px solid #d9d9d9;white-space:nowrap}")
+    [void]$sb.AppendLine("table.summary td{padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:1px solid transparent}")
+    [void]$sb.AppendLine(".num{text-align:right}")
+    [void]$sb.AppendLine(".w-co{width:14%}.w-bt{width:14%}.w-je{width:8%}.w-rf{width:24%}.w-dt{width:10%}.w-cnt{width:7%}.w-st{width:11%}.w-rv{width:6%}.w-err{width:6%}")
+    [void]$sb.AppendLine("tr.posted td{background:#e6f4ea;border-color:#e6f4ea}")
+    [void]$sb.AppendLine("tr.failed td{background:#fdecea;border-color:#fdecea}")
+    [void]$sb.AppendLine("tr.loaded td{background:#fff8e1;border-color:#fff8e1}")
+    [void]$sb.AppendLine("tr.other td{background:#eef3ff;border-color:#eef3ff}")
+    [void]$sb.AppendLine(".co{margin-top:12px}")
+    [void]$sb.AppendLine(".co h3{margin:8px 0 6px 0}")
+    [void]$sb.AppendLine(".meta{margin:0 0 6px 0;font-size:12px}")
+    [void]$sb.AppendLine("table.lines{width:100%;table-layout:fixed;border:1px solid #e0e0e0;font-size:11px;line-height:1.1;margin:2px 0 10px 0}")
+    [void]$sb.AppendLine("table.lines th{background:#f7f7f7;padding:2px 6px;text-align:left;font-weight:600;border:0;border-bottom:1px solid #e0e0e0}")
+    [void]$sb.AppendLine("table.lines td{padding:2px 6px;border-top:1px solid #f0f0f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}")
+    [void]$sb.AppendLine(".foot{margin-top:14px;font-size:10px;color:#666;border-top:1px solid #ddd;padding-top:6px;font-family:Consolas,monospace}")
+    [void]$sb.AppendLine("</style>")
+    [void]$sb.AppendLine("</head>")
+    [void]$sb.AppendLine("<body>")
+
+    # Header
+    [void]$sb.AppendLine("<h2 class='h'>Dynamics Import Summary</h2>")
+    [void]$sb.AppendLine("<div class='p'>Filename: <code>$(HtmlEncode $fileDisplay)</code></div>")
+
+    $badgeClass = if ($jobResult -eq 'SUCCESS') { 'b-success' } elseif ($jobResult -eq 'ERROR') { 'b-error' } elseif ($jobResult -eq 'PARTIAL') { 'b-partial' } else { 'b-progress' }
+    [void]$sb.AppendLine("<div class='p'>Result: <span class='badge $badgeClass'>$(HtmlEncode $jobResult)</span></div>")
+    [void]$sb.AppendLine("<div class='p'>Job ID: <span class='badge $badgeClass'>$(HtmlEncode $JobId)</span></div>")
+
+    # Overall summary table
+    [void]$sb.AppendLine("<table class='summary' cellspacing='0' cellpadding='0'>")
+    [void]$sb.AppendLine("<thead><tr>")
+    [void]$sb.AppendLine("<th class='w-co'>Company</th>")
+    [void]$sb.AppendLine("<th class='w-bt'>Batch</th>")
+    [void]$sb.AppendLine("<th class='w-je'>JE</th>")
+    [void]$sb.AppendLine("<th class='w-rf'>Reference</th>")
+    [void]$sb.AppendLine("<th class='w-dt'>TrxDate</th>")
+    [void]$sb.AppendLine("<th class='w-cnt'>#Rows</th>")
+    [void]$sb.AppendLine("<th class='w-st'>RunStatus</th>")
+    [void]$sb.AppendLine("<th class='w-rv'>Reversal</th>")
+    [void]$sb.AppendLine("<th class='w-err'>Error</th>")
+    [void]$sb.AppendLine("</tr></thead><tbody>")
+
+    foreach ($r in $runs) {
+        $rowClass = switch (([string]$r.Status).ToUpperInvariant()) {
+            'POSTED' { 'posted' }
+            'FAILED' { 'failed' }
+            'LOADED' { 'loaded' }
+            default  { 'other' }
+        }
+        $company  = HtmlEncode $r.CompanyA
+        $batch    = HtmlEncode $r.BatchID
+        $je       = if ($r.JournalEntry) { HtmlEncode ([string]$r.JournalEntry) } else { '<none>' }
+        $ref      = HtmlEncode $r.Reference
+        $txDate   = if ($r.TxDate) { ([DateTime]$r.TxDate).ToString('yyyy-MM-dd') } else { '' }
+        $rowsOut  = if ($r.RowCountLine -ne $null) { [int]$r.RowCountLine } else { 0 }
+        $status   = HtmlEncode $r.Status
+        $revYN    = if ($r.ReversalFlag -eq 'Y') { 'Y' } elseif ($r.ReversalFlag -eq 'N') { 'N' } else { '' }
+        $errMsg   = if ($r.Status -eq 'FAILED' -and $r.Message) { HtmlEncode $r.Message } else { '' }
+
+        [void]$sb.AppendLine("<tr class='$rowClass'>")
+        [void]$sb.AppendLine("<td class='w-co'>$company</td>")
+        [void]$sb.AppendLine("<td class='w-bt'><code>$batch</code></td>")
+        [void]$sb.AppendLine("<td class='w-je num'>$je</td>")
+        [void]$sb.AppendLine("<td class='w-rf'>$ref</td>")
+        [void]$sb.AppendLine("<td class='w-dt'>$txDate</td>")
+        [void]$sb.AppendLine("<td class='w-cnt num'>$rowsOut</td>")
+        [void]$sb.AppendLine("<td class='w-st'>$status</td>")
+        [void]$sb.AppendLine("<td class='w-rv'>$revYN</td>")
+        [void]$sb.AppendLine("<td class='w-err'>$errMsg</td>")
+        [void]$sb.AppendLine("</tr>")
+    }
+
+    [void]$sb.AppendLine("</tbody></table>")
+
+    # --- Line break / separator ---
+    [void]$sb.AppendLine("<div style='height:8px'></div>")
+
+    # -------------------------
+    # Per-company detail blocks
+    # -------------------------
+    foreach ($r in $runs) {
+        $company  = [string]$r.CompanyA
+        $jeStr    = if ($r.JournalEntry) { [string]$r.JournalEntry } else { '<none>' }
+        $txDate   = if ($r.TxDate) { ([DateTime]$r.TxDate).ToString('yyyy-MM-dd') } else { '' }
+        $batch    = [string]$r.BatchID
+        $ref      = [string]$r.Reference
+        $runid    = [guid]$r.runid
+
+        [void]$sb.AppendLine("<div class='co'>")
+        [void]$sb.AppendLine("<h3>$(HtmlEncode $company)</h3>")
+        
+        <# #>
+
+        # --- 2-column metadata table (no borders) ---
+        # --- 2-column LABEL | VALUE table (no borders) ---
+        [void]$sb.AppendLine("<table role='presentation' cellspacing='0' cellpadding='0' style='border-collapse:collapse;table-layout:fixed;width:60%;font-size:12px'>")
+
+        [void]$sb.AppendLine("<tr>")
+        [void]$sb.AppendLine("  <td style='padding:2px 8px 2px 0;vertical-align:top;width:10%;white-space:nowrap'><strong>Journal Entry</strong></td>")
+        [void]$sb.AppendLine("  <td style='padding:2px 0 2px 8px;vertical-align:top;width:90%'>$(HtmlEncode $jeStr)</td>")
+        [void]$sb.AppendLine("</tr>")
+
+        [void]$sb.AppendLine("<tr>")
+        [void]$sb.AppendLine("  <td style='padding:2px 8px 2px 0;vertical-align:top;white-space:nowrap'><strong>TxDate</strong></td>")
+        [void]$sb.AppendLine("  <td style='padding:2px 0 2px 8px;vertical-align:top'>$(HtmlEncode $txDate)</td>")
+        [void]$sb.AppendLine("</tr>")
+
+        [void]$sb.AppendLine("<tr>")
+        [void]$sb.AppendLine("  <td style='padding:2px 8px 2px 0;vertical-align:top;white-space:nowrap'><strong>BatchID</strong></td>")
+        [void]$sb.AppendLine("  <td style='padding:2px 0 2px 8px;vertical-align:top'><code>$(HtmlEncode $batch)</code></td>")
+        [void]$sb.AppendLine("</tr>")
+
+        [void]$sb.AppendLine("<tr>")
+        [void]$sb.AppendLine("  <td style='padding:2px 8px 2px 0;vertical-align:top;white-space:nowrap'><strong>Reference</strong></td>")
+        [void]$sb.AppendLine("  <td style='padding:2px 0 2px 8px;vertical-align:top;white-space:normal;word-break:break-word'>$(HtmlEncode $ref)</td>")
+        [void]$sb.AppendLine("</tr>")
+
+        [void]$sb.AppendLine("<tr>")
+        [void]$sb.AppendLine("  <td style='padding:2px 8px 2px 0;vertical-align:top;white-space:nowrap'><strong>JobID</strong></td>")
+        [void]$sb.AppendLine("  <td style='padding:2px 0 2px 8px;vertical-align:top;white-space:normal;word-break:break-word'>$(HtmlEncode $runid)</td>")
+        [void]$sb.AppendLine("</tr>")
+
+        [void]$sb.AppendLine("</table>")
+
+
+        $dt = $linesByRun[$($r.RunID)]
+        if ($dt -and $dt.Count -gt 0) {
+            [void]$sb.AppendLine("<table class='lines' cellspacing='0' cellpadding='0'>")
+            [void]$sb.AppendLine("<thead><tr>")
+                [void]$sb.AppendLine("<th style='width:46%'>Account</th>")
+                [void]$sb.AppendLine("<th class='num';style='width:18%;text-align:right'>Debit</th>")
+                [void]$sb.AppendLine("<th class='num';style='width:18%;text-align:right'>Credit</th>")
+                [void]$sb.AppendLine("<th class='num';style='width:18%;text-align:right'>Total</th>")
+            [void]$sb.AppendLine("</tr></thead><tbody>")
+
+            $sumD = 0.0; $sumC = 0.0; $sumN = 0.0
+            foreach ($row in $dt) {
+                $acct = HtmlEncode ([string]$row.Account)
+                $d = [decimal]$row.DebitAmt
+                $c = [decimal]$row.CreditAmt
+                $n = [decimal]$row.NetAmt
+                $sumD += $d; $sumC += $c; $sumN += $n
+                $dOut = ('{0:N2}' -f $d); $cOut = ('{0:N2}' -f $c); $nOut = ('{0:N2}' -f $n)
+                [void]$sb.AppendLine("<tr><td><code>$acct</code></td><td class='num'>$dOut</td><td class='num'>$cOut</td><td class='num'>$nOut</td></tr>")
+            }
+
+            $sd = ('{0:N2}' -f $sumD); $sc = ('{0:N2}' -f $sumC); $sn = ('{0:N2}' -f $sumN)
+            [void]$sb.AppendLine("<tr><td style='font-weight:600'>Totals</td><td class='num' style='font-weight:600'>$sd</td><td class='num' style='font-weight:600'>$sc</td><td class='num' style='font-weight:600'>$sn</td></tr>")
+            [void]$sb.AppendLine("</tbody></table>")
+        } else {
+            [void]$sb.AppendLine("<div class='p' style='color:#666'>No line items.</div>")
+        }
+
+        [void]$sb.AppendLine("</div>")
+    }
+
+    # Footer: JobID + RunIDs
+    [void]$sb.AppendLine("<div class='foot'>SQL Debug<code></code></div>")
+    [void]$sb.AppendLine("<div class='foot'>SELECT * FROM dynamics.dbo.IA_Run r JOIN dynamics.dbo.IA_RunEvent re ON r.RunID = re.RunID WHERE r.JobID = '$jobid'</div>")
+    #foreach ($r in $runs) {
+    #    [void]$sb.AppendLine("<div class='foot'><code>$($r.RunID)</code></div>")
+    #}
+
+    [void]$sb.AppendLine("</body></html>")
+
+    [pscustomobject]@{
+        Subject = $subject
+        Body    = $sb.ToString()
+    }
+}
+
+
+<# ================================================ #>
+
+function Send-JobEmail {
+    param(
+        [Parameter(Mandatory = $true)][string]$Subject,
+        [Parameter(Mandatory = $true)][string]$Body
+    )
+
+    try {
+    
+        Send-MailMessage -SmtpServer $EmailConfig.Server -from $EmailConfig.From -To $EmailConfig.To -Subject $Subject -Body $Body -BodyAsHtml
+        return $true
+
+    }
+    catch {
+        Write-Log "Email send failed: $($_.Exception.Message)" 
+        return $false
+    }
+}
+
+# ----------------------------
+# MAIN
+# ----------------------------
+function Invoke-Main {
+
+    $Paths.Keys | ForEach-Object {
+        if ($_ -ne 'Log') { Ensure-Directory -Path $Paths[$_] }
+    }
+
+    $files = @(Get-ChildItem -Path $Paths.In -Filter *.csv -File -ErrorAction SilentlyContinue)
+    if ($files.Count -eq 0) { return }
+
+    Write-Log "-- Import Begin --" -IncludeHeader
+
+    foreach ($file in $files) {
+        Write-Log "Found file: $($file.Name)" 
+
+        $working = Move-File -Source $file.FullName -DestinationDir $Paths.Proc
+        if ($null -eq $working) {
+            Write-Log "Skipping: file locked/in use or failed to move. File: $($file.Name)"
+            continue
+        }
+
+        try {
+            Write-Log "Starting SQL import for: $($working.FullName)" 
+
+            $jobId = Invoke-IntracompanyImportSP -CsvFullPath $working.FullName
+            if (-not $jobId) {
+                Move-File -Source $working.FullName -DestinationDir $Paths.ErrorDir | Out-Null
+                Write-Log "No JobID returned. Moved to error: $($file.Name)" 
+                continue
+            }
+
+            $jobResult = Get-JobResult -JobID $jobId
+            if (-not $jobResult) {
+                Move-File -Source $working.FullName -DestinationDir $Paths.ErrorDir | Out-Null
+                Write-Log "JobResult not found for JobID [$jobId]. Moved to error: $($file.Name)"
+                continue
+            }
+
+            switch ($jobResult.ToUpperInvariant()) {
+                'SUCCESS' {
+                    $archived = Move-File -Source $working.FullName -DestinationDir $Paths.Archive
+                    if ($null -ne $archived) {
+                        Write-Log "Success: $($file.Name) → archived to $($Paths.Archive)"
+                    }
+                }
+                'PARTIAL' {
+                    $partialDir = if ($Paths.ContainsKey('Partial')) { $Paths.Partial } else { $Paths.ErrorDir }
+                    Move-File -Source $working.FullName -DestinationDir $partialDir | Out-Null
+                    Write-Log "Partial result for JobID [$jobId]. Moved to: $partialDir"
+                }
+                default {
+                    Move-File -Source $working.FullName -DestinationDir $Paths.ErrorDir | Out-Null
+                    Write-Log "Error result for JobID [$jobId]. Moved to error: $($file.Name)" 
+                }
+            }
+
+        }
+        catch {
+            Move-File -Source $working.FullName -DestinationDir $Paths.ErrorDir | Out-Null
+            Write-Log "Unhandled failure for $($file.Name): $($_.Exception.Message)"
+        }
+    }
+
+    Write-Log "Composing Email"
+    $subject = $null
+    
+    $JobDetails = New-DynamicsImportJobEmailContent -JobId $jobId
+    $Subject    = $JobDetails.Subject
+    $Body       = $JobDetails.Body
+
+    Send-JobEmail -Subject $Subject -Body $Body
+    
+    write-log "Email Sent"
+    Write-Log "-- Import End --" -IncludeFooter
+}
+
+Function Invoke-Debug {
+    param(
+        [Parameter(Mandatory = $false)][string]$JobID = '2990B5FC-6DE7-43A6-9958-CE0E3EAB62DC',
+        [Parameter(Mandatory = $false)][bool]$SendEmail = 0
+    )
+
+    write-host $JobID
+
+    $JobDetails = New-DynamicsImportJobEmailContent -JobId $jobId
+    $Subject    = $JobDetails.Subject
+    $Body       = $JobDetails.Body
+
+    Send-JobEmail -Subject $Subject -Body $Body
+
+}
+
+#Invoke-Main
+$JobID = 'ffda0da6-cae8-487c-b297-0628ba209fcf'
+Invoke-Debug -JobID $JobID
+
+
+
+
 CREATE TABLE [dbo].[IA_FileStage] (
     [Company]   VARCHAR (20)  NULL,
     [Account]   VARCHAR (129) NULL,
