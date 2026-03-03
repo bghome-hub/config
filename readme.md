@@ -1,20 +1,95 @@
+
 <!DOCTYPE html>
 <html>
 <head>
     <style>
-        body { font-family: Arial, sans-serif; font-size: 14px; color: #333; }
-        h2 { color: #0056b3; }
-        h3 { color: #444; margin-bottom: 5px; }
-        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 13px; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; font-weight: bold; }
-        .status-success { color: green; font-weight: bold; }
-        .status-error { color: red; font-weight: bold; }
-        .amt { text-align: right; }
+        /* Overall Page Styling */
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            font-size: 13px; 
+            color: #333333; 
+            background-color: #f4f7f6;
+            margin: 20px;
+        }
+        
+        /* Headers */
+        h2 { 
+            color: #2c3e50; 
+            border-bottom: 2px solid #3498db; 
+            padding-bottom: 5px;
+            margin-top: 30px;
+        }
+        h3 { 
+            color: #34495e; 
+            background-color: #e8ecf1;
+            padding: 8px;
+            border-left: 4px solid #2980b9;
+            margin-top: 25px;
+            margin-bottom: 0;
+        }
+
+        /* Table Styling */
+        table { 
+            border-collapse: collapse; 
+            width: 100%; 
+            margin-bottom: 20px; 
+            background-color: #ffffff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        th, td { 
+            border: 1px solid #dddddd; 
+            padding: 10px 12px; 
+            text-align: left; 
+        }
+        th { 
+            background-color: #2c3e50; 
+            color: #ffffff; 
+            font-weight: 600; 
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+        }
+        
+        /* Sub-headers for the side-by-side GP vs Import */
+        th.sub-header {
+            background-color: #34495e;
+            color: #ecf0f1;
+        }
+
+        /* Row Hover and Zebra Striping */
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        tr:hover { background-color: #f1f5f8; }
+
+        /* Status Pills */
+        .status-success { 
+            color: #155724; 
+            background-color: #d4edda; 
+            border: 1px solid #c3e6cb;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-weight: bold;
+            display: inline-block;
+        }
+        .status-error { 
+            color: #721c24; 
+            background-color: #f8d7da; 
+            border: 1px solid #f5c6cb;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-weight: bold;
+            display: inline-block;
+        }
+
+        /* Number Formatting */
+        .amt { 
+            text-align: right; 
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
-    <h2>Import Job Summary</h2>
+    <h2>Dynamics GP Import Job Summary</h2>
     <table>
         <thead>
             <tr>
@@ -22,8 +97,8 @@
                 <th>Batch ID</th>
                 <th>Journal Entry</th>
                 <th>Status</th>
-                <th>Import Net</th>
-                <th>GP Net</th>
+                <th class="amt">Import Net</th>
+                <th class="amt">GP Net</th>
                 <th>Message</th>
             </tr>
         </thead>
@@ -33,100 +108,8 @@
     </table>
 
     <h2>Import vs. GL Detail Lines</h2>
+    <!-- The PowerShell script will inject the detailed tables here -->
     {{DetailTables}}
 </body>
 </html>
 
-function New-DynamicsImportJobEmailContent {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [Guid]$JobId,
-        [Parameter(Mandatory)]
-        [string]$TemplatePath # e.g., "C:\scripts\template.html"
-    )
-
-    # 1. Execute the newly updated audit stored procedure ONCE
-    $query = "EXEC dbo.usp_IA_Run_Audit @JobID = '$JobId'"
-    
-    try {
-        $auditData = Invoke-Db -Query $query
-    } catch {
-        Write-Log -Message "Failed to execute audit SP: $($_.Exception.Message)" -Level "ERROR"
-        return "<h3>Error retrieving audit data.</h3>"
-    }
-
-    if (-not $auditData) {
-        return "<h3>No audit data found for JobID: $JobId</h3>"
-    }
-
-    # 2. Initialize string builders for our HTML parts
-    $summaryHtml = ""
-    $detailHtml = ""
-
-    # 3. Group the dataset by RunID (which separates it by Company/Batch/JE)
-    $runs = $auditData | Group-Object -Property RunID
-
-    foreach ($run in $runs) {
-        # Extract header info from the first row of the group
-        $firstRow = $run.Group
-        $company  = $firstRow.CompanyA
-        $batch    = $firstRow.BatchID
-        $je       = $firstRow.JournalEntry
-        $status   = $firstRow.STATUS
-        $msg      = $firstRow.MESSAGE
-
-        # Format status color
-        $statusClass = if ($status -match "Error|Failed") { "status-error" } else { "status-success" }
-
-        # Calculate Totals for the Summary
-        # Note: Using the column names mapped in your SP (DebitAmt, gp_DebitAmount, etc.)
-        $importNet = ($run.Group | Measure-Object -Property NetAmt -Sum).Sum
-        $gpNetCalc = ($run.Group | Measure-Object -Property gp_DebitAmount -Sum).Sum - ($run.Group | Measure-Object -Property gp_CreditAmount -Sum).Sum
-        
-        # Build the Summary Row
-        $summaryHtml += "<tr>
-            <td>$company</td>
-            <td>$batch</td>
-            <td>$je</td>
-            <td class='$statusClass'>$status</td>
-            <td class='amt'>$("{0:N2}" -f $importNet)</td>
-            <td class='amt'>$("{0:N2}" -f $gpNetCalc)</td>
-            <td>$msg</td>
-        </tr>"
-
-        # Build the Detail Table for this specific Run
-        $detailHtml += "<h3>$company | Batch: $batch | JE: $je</h3>"
-        $detailHtml += "<table>
-            <thead>
-                <tr>
-                    <th rowspan='2'>Account</th>
-                    <th colspan='2' style='text-align:center'>Import File</th>
-                    <th colspan='2' style='text-align:center'>Dynamics GP</th>
-                </tr>
-                <tr>
-                    <th class='amt'>Debit</th><th class='amt'>Credit</th>
-                    <th class='amt'>Debit</th><th class='amt'>Credit</th>
-                </tr>
-            </thead>
-            <tbody>"
-
-        foreach ($line in $run.Group) {
-            $detailHtml += "<tr>
-                <td>$($line.Account)</td>
-                <td class='amt'>$("{0:N2}" -f $line.DebitAmt)</td>
-                <td class='amt'>$("{0:N2}" -f $line.CreditAmt)</td>
-                <td class='amt'>$("{0:N2}" -f $line.gp_DebitAmount)</td>
-                <td class='amt'>$("{0:N2}" -f $line.gp_CreditAmount)</td>
-            </tr>"
-        }
-        $detailHtml += "</tbody></table>"
-    }
-
-    # 4. Load the template and inject the generated HTML
-    $template = Get-Content -Path $TemplatePath -Raw
-    $finalEmailBody = $template -replace '\{\{SummaryRows\}\}', $summaryHtml `
-                                -replace '\{\{DetailTables\}\}', $detailHtml
-
-    return $finalEmailBody
-}
