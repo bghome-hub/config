@@ -1,3 +1,188 @@
+
+CREATE OR ALTER PROCEDURE dbo.usp_IA_Run_Audit(
+    @JobID UNIQUEIDENTIFIER
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    /* Create Temp Table */
+    DROP TABLE IF EXISTS #AuditResults;
+
+    CREATE TABLE #AuditResults(
+        AuditResultID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        JobID UNIQUEIDENTIFIER,
+        runid UNIQUEIDENTIFIER, 
+        [FILENAME] NVARCHAR(520),
+        CompanyA VARCHAR(10),
+        BatchID CHAR(15),
+        JournalEntry INT,
+        TrxDate DATE,
+        [Reference] VARCHAR(30),
+        [STATUS] VARCHAR(20),
+        [MESSAGE] VARCHAR(4000),
+        ReversalFlag CHAR(1),
+        TrxDateBasis DATE,
+        ReversalDate DATE,
+        Account CHAR(129),
+        AcctDesc CHAR(255),
+        Amount NUMERIC(19,5),
+        DebitAmt NUMERIC(19,5),
+        CreditAmt NUMERIC(19,5),
+        NetAmt NUMERIC(19,5),
+        /* Values from GP */
+        gp_Journal INT,
+        gp_BatchNumber CHAR(15),
+        gp_Reference CHAR(31),
+        gp_TrxDate DATETIME,
+        gp_ReversalFlag CHAR(1),
+        gp_PeriodID SMALLINT,
+        gp_PeriodMonth INT,
+        gp_OpenYear SMALLINT,
+        gp_ReversalPeriodID SMALLINT,
+        gp_ReversalPeriodMonth INT,
+        gp_ReversalYear SMALLINT,
+        gp_AccountIndex INT, 
+        gp_Account CHAR(129), 
+        gp_Description CHAR(31),
+        gp_Company CHAR(5),
+        gp_DebitAmount NUMERIC(19,5),
+        gp_CreditAmount NUMERIC(19,5),
+        gp_OriginatingDebitAmount NUMERIC(19,5),
+        gp_OriginatingCreditAmount NUMERIC(19,5)
+    );
+
+    /* Cursor Variables */
+    DECLARE @currentRunID UNIQUEIDENTIFIER;
+    DECLARE @currentCompany VARCHAR(20);
+    DECLARE @sql NVARCHAR(MAX); 
+    DECLARE @params NVARCHAR(MAX) = N'@p_runID UNIQUEIDENTIFIER';
+
+    DECLARE run_cursor CURSOR FOR
+        SELECT RunID, CompanyA
+        FROM DYNAMICS.dbo.IA_Run
+        WHERE JobID = @JobID;
+
+    OPEN run_cursor;
+
+    FETCH NEXT FROM run_cursor INTO @currentRunID, @currentCompany;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        /* Build dynamic statement that INSERTs into the temp table */
+        SET @sql = N'
+            INSERT INTO #AuditResults (
+                JobID, runid, [FILENAME], CompanyA, BatchID, JournalEntry, TrxDate, [Reference], [STATUS], [MESSAGE],
+                ReversalFlag, TrxDateBasis, ReversalDate, Account, AcctDesc, Amount,
+                DebitAmt, CreditAmt, NetAmt,
+                gp_Journal, gp_BatchNumber, gp_Reference, gp_TrxDate, gp_ReversalFlag, gp_PeriodID,
+                gp_PeriodMonth, gp_OpenYear, gp_ReversalPeriodID, gp_ReversalPeriodMonth, gp_ReversalYear,
+                gp_AccountIndex, gp_Account, gp_Description, gp_Company, gp_DebitAmount, gp_CreditAmount,
+                gp_OriginatingDebitAmount, gp_OriginatingCreditAmount
+            )
+            SELECT 
+                r.JobID,
+                l.runid, 
+                r.[FileName],
+                r.CompanyA,
+                r.BatchID,
+                r.JournalEntry,
+                l.TrxDate,
+                r.[Reference],
+                r.[Status],
+                r.[Message],
+                r.ReversalFlag,
+                r.TrxDateBasis,
+                r.ReversalDate,
+                l.Account,
+                l.AcctDesc,
+                l.Amount,
+                SUM(ISNULL(l.Debit,0)) AS DebitAmt,
+                SUM(ISNULL(l.Credit,0)) AS CreditAmt,
+                SUM(ISNULL(l.Debit,0) - ISNULL(l.Credit,0)) AS NetAmt,
+                /* Values from GP */
+                glh.JRNENTRY AS gp_Journal,
+                glh.BACHNUMB AS gp_BatchNumber,
+                glh.REFRENCE AS gp_Reference,
+                glh.TRXDATE  AS gp_TrxDate,
+                CASE 
+                    WHEN glh.TRXTYPE = 0 THEN ''N''
+                    WHEN glh.TRXTYPE = 1 THEN ''Y''
+                END AS gp_ReversalFlag,  
+                glh.PERIODID AS gp_PeriodID,
+                ISNULL(fp.PeriodMonth,0) AS gp_PeriodMonth,
+                glh.OPENYEAR AS gp_OpenYear,
+                glh.REVPRDID AS gp_ReversalPeriodID,
+                ISNULL(fp2.PeriodMonth,0) AS gp_ReversalPeriodMonth,
+                glh.REVYEAR  AS gp_ReversalYear,
+                gld.ACTINDX  AS gp_AccountIndex,
+                act.ACTNUMST AS gp_Account,
+                gld.DSCRIPTN AS gp_Description,
+                gld.INTERID AS gp_Company,
+                gld.DEBITAMT AS gp_DebitAmount,
+                gld.CRDTAMNT AS gp_CreditAmount,
+                gld.ORDBTAMT AS gp_OriginatingDebitAmount,
+                gld.ORCRDAMT AS gp_OriginatingCreditAmount
+            FROM dynamics.dbo.IA_Run r
+            LEFT JOIN dynamics.dbo.IA_Line l ON l.RunID = r.RunID
+            LEFT JOIN [' + @currentCompany + N'].dbo.GL10000 glh   ON glh.BACHNUMB = r.BatchID
+            LEFT JOIN [' + @currentCompany + N'].dbo.GL10001 gld   ON glh.JRNENTRY = gld.JRNENTRY
+            LEFT JOIN [' + @currentCompany + N'].dbo.GL00105 act   ON act.ACTINDX  = gld.ACTINDX
+            LEFT JOIN dynamics.dbo.ia_fiscal_period fp  ON glh.PERIODID = fp.PeriodID
+            LEFT JOIN dynamics.dbo.ia_fiscal_period fp2 ON glh.REVPRDID = fp2.PeriodID
+            WHERE r.RunID = @p_runID
+            GROUP BY 
+                CASE WHEN glh.TRXTYPE = 0 THEN ''N'' WHEN glh.TRXTYPE = 1 THEN ''Y'' END,
+                r.JobID, l.runid, r.[FileName], r.CompanyA, r.BatchID, r.JournalEntry,
+                r.[Reference], r.[Status], r.[Message], r.ReversalFlag, r.TrxDateBasis, r.ReversalDate,
+                l.Amount, l.Account, l.AcctDesc, l.TrxDate,
+                glh.JRNENTRY, glh.BACHNUMB, glh.REFRENCE, glh.TRXDATE,
+                glh.PERIODID, glh.OPENYEAR, glh.REVPRDID, glh.REVYEAR,
+                gld.ACTINDX, act.ACTNUMST, gld.DSCRIPTN, gld.INTERID,
+                gld.DEBITAMT, gld.CRDTAMNT, gld.ORDBTAMT, gld.ORCRDAMT,
+                fp.PeriodMonth, fp2.PeriodMonth
+        ';
+
+        EXEC sys.sp_executesql
+            @stmt   = @sql,
+            @params = @params,
+            @p_runID = @currentRunID;
+
+        FETCH NEXT FROM run_cursor INTO @currentRunID, @currentCompany;
+    END
+
+    CLOSE run_cursor;
+    DEALLOCATE run_cursor;
+
+    SELECT * FROM #AuditResults ORDER BY CompanyA, Account;
+
+    DROP TABLE IF EXISTS #AuditResults;
+END
+GO
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+============
+
 ALTER PROCEDURE dbo.usp_IA_Run_Audit(
     @JobID UNIQUEIDENTIFIER
 )
