@@ -1,44 +1,228 @@
-You are completely right. Regex is completely unreadable and a nightmare to maintain. If someone else (or you in 6 months) looks at that script, they will have no idea what those `(?s)` regex blocks are doing.
+Dynamics GP Import Reporting: PowerShell and HTML Templates
 
-We can rip the regex out completely. The absolute easiest, cleanest way to do this in one file is to just use a simple `<!--===SPLIT===-->` tag between your sections, and let PowerShell chop the file into an array.
-
-Here is the final, regex-free setup. 
-
-### 1. `template.html`
-Save this file. It is the exact same compressed layout, but instead of complex hidden regex tags at the bottom, it just uses `<!--===SPLIT===-->` to separate the chunks.
-
-```html
 <!DOCTYPE html>
 <html>
 <head>
 <style>
-    body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; font-size: 10px; color: #000; }
-    .meta-block { margin-bottom: 10px; }
-    .meta-block div { margin-bottom: 1px; }
-    
-    table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
-    th, td { padding: 3px 5px; text-align: left; border-bottom: 1px solid #eee; }
-    
-    .sum-table th { border-bottom: 1px solid #c8d8c8; background-color: #e2f0d9; font-weight: bold; }
-    .sum-table tr:nth-child(even) { background-color: #ffffff; }
-    .sum-table tr:nth-child(odd) { background-color: #f4f9f4; }
-    
-    .det-header { font-size: 13px; font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #ccc; padding-bottom: 2px;}
-    .det-meta { border: none; margin-bottom: 5px; width: auto; }
-    .det-meta td { padding: 1px 10px 1px 0; border: none; }
-    .det-meta td:first-child { font-weight: bold; width: 90px; }
-    
-    .det-table th { background-color: #f0f0f0; border-bottom: 1px solid #ccc; font-weight: bold; }
-    .det-table th.center { text-align: center; }
-    .det-table th.right, .det-table td.right { text-align: right; font-family: 'Consolas', monospace; }
-    .det-table tr.totals td { border-top: 1px solid #333; font-weight: bold; background-color: #fafafa;}
-    
-    .posted-msg { color: #d9534f; font-weight: bold; font-size: 10px; margin-bottom: 5px; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 10px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 10px; }
+    th { background-color: #e2efda; border: 1px solid #ffffff; padding: 4px; text-align: left; font-size: 10px; }
+    td { border: 1px solid #ffffff; padding: 4px; font-size: 10px; }
+    tr:nth-child(even) { background-color: #f2f2f2; }
+    .right { text-align: right; }
+    .totals { font-weight: bold; background-color: #ffffff !important; border-top: 1px solid #000000; }
+    .posted-msg { color: #000000; font-weight: bold; margin-top: 10px; }
 </style>
 </head>
 <body>
-    <div class="meta-block">
-        <div>Filename: <strong>{{FILENAME}}</strong></div>
+    <h3>Import Job Summary</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Company</th>
+                <th>Batch</th>
+                <th>JE</th>
+                <th>Reference</th>
+                <th>TrxDate</th>
+                <th>#Rows</th>
+                <th>RunStatus</th>
+                <th>Reversal</th>
+                <th>Error</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{SUMMARY_ROWS}}
+        </tbody>
+    </table>
+    {{DETAIL_SECTIONS}}
+    {{POSTED_FOOTER}}
+</body>
+</html>
+
+@@@SPLIT@@@
+
+<div class="detail-section">
+    <h3>{{COMPANY_ID}}</h3>
+    <table>
+        <tr><td><b>Journal Entry</b></td><td>{{JE}}</td></tr>
+        <tr><td><b>TxDate</b></td><td>{{TRX_DATE}}</td></tr>
+        <tr><td><b>BatchID</b></td><td>{{BATCH_ID}}</td></tr>
+        <tr><td><b>Reference</b></td><td>{{REFERENCE}}</td></tr>
+        <tr><td><b>JobID</b></td><td>{{JOB_ID}}</td></tr>
+    </table>
+    <table>
+        <thead>
+            <tr>
+                <th>Account</th>
+                <th class="right">Debit</th>
+                <th class="right">Credit</th>
+                <th class="right">Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{DETAIL_ROWS}}
+            <tr class="totals">
+                <td>Totals</td>
+                <td class="right">{{TOT_IMP_DEB}}</td>
+                <td class="right">{{TOT_IMP_CRE}}</td>
+                <td class="right">{{TOT_NET}}</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+@@@SPLIT@@@
+
+<tr>
+    <td>{{COMPANY}}</td>
+    <td>{{BATCH}}</td>
+    <td>{{JE}}</td>
+    <td>{{REFERENCE}}</td>
+    <td>{{TRXDATE}}</td>
+    <td>{{ROWS}}</td>
+    <td>{{STATUS}}</td>
+    <td>{{REVERSAL}}</td>
+    <td>{{ERROR}}</td>
+</tr>
+
+@@@SPLIT@@@
+
+<tr>
+    <td>{{ACCOUNT}}</td>
+    <td class="right">{{IMP_DEB}}</td>
+    <td class="right">{{IMP_CRE}}</td>
+    <td class="right">{{IMP_NET}}</td>
+</tr>
+
+@@@SPLIT@@@
+
+<div class="posted-msg">&#9888; Note: This batch has been POSTED. Unposted Dynamic GP data remains in the audit tables.</div>
+
+
+function New-DynamicsImportJobEmailContent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [Guid]$JobId
+    )
+
+    $TemplatePath = "$PSScriptRoot\template.html"
+    if (-not (Test-Path $TemplatePath)) {
+        return "<h3>Template file not found at $TemplatePath</h3>"
+    }
+
+    $html = Get-Content -Path $TemplatePath -Raw
+    $parts = $html -split '@@@SPLIT@@@'
+    
+    $layoutTpl = $parts[0].Trim()
+    $detailContainerTpl = $parts[1].Trim()
+    $summaryRowTpl = $parts[2].Trim()
+    $detailRowTpl = $parts[3].Trim()
+    $postedFooterTpl = $parts[4].Trim()
+
+    # Define complex date logic and fetch headers from Source Context (Pasted Text)
+    $qHeaders = @"
+SELECT 
+    r.RunID, 
+    r.JobID, 
+    r.FileName, 
+    r.CompanyA, 
+    r.BatchID, 
+    r.JournalEntry, 
+    r.Reference, 
+    r.Status, 
+    r.Message, 
+    r.RowCountLine, 
+    r.JobResult, 
+    r.ReversalFlag, 
+    TxDate = ISNULL(r.TrxDateBasis, (SELECT MIN(il.TrxDate) FROM dbo.IA_Line il WHERE il.RunID = r.RunID))
+FROM dbo.IA_Run r 
+WHERE r.JobID = '$JobId' 
+ORDER BY r.StartedDT ASC;
+"@
+    $headerData = Invoke-Sqlcmd -Query $qHeaders
+
+    $summaryRows = ""
+    $detailSections = ""
+    $isPosted = $false
+
+    foreach ($header in $headerData) {
+        # Check if any part of the job is posted for the footer warning
+        if ($header.Status -eq "POSTED") { $isPosted = $true }
+
+        # Generate Summary Table Row
+        $sRow = $summaryRowTpl.Replace('{{COMPANY}}', $header.CompanyA)
+        $sRow = $sRow.Replace('{{BATCH}}', $header.BatchID)
+        $sRow = $sRow.Replace('{{JE}}', $header.JournalEntry)
+        $sRow = $sRow.Replace('{{REFERENCE}}', $header.Reference)
+        $sRow = $sRow.Replace('{{TRXDATE}}', (Get-Date $header.TxDate -Format "yyyy-MM-dd"))
+        $sRow = $sRow.Replace('{{ROWS}}', $header.RowCountLine)
+        $sRow = $sRow.Replace('{{STATUS}}', $header.Status)
+        $sRow = $sRow.Replace('{{REVERSAL}}', $header.ReversalFlag)
+        $sRow = $sRow.Replace('{{ERROR}}', $header.Message)
+        $summaryRows += $sRow
+
+        # Fetch Lines using Source Context field names (1.png / audit.txt)
+        $rid = $header.RunID
+        $qLines = @"
+SELECT 
+    il.Account, 
+    SUM(ISNULL(il.Debit,0)) AS DebitAmt, 
+    SUM(ISNULL(il.Credit,0)) AS CreditAmt, 
+    SUM(ISNULL(il.Debit,0) - ISNULL(il.Credit,0)) AS NetAmt 
+FROM dbo.IA_Line il
+WHERE il.RunID = '$rid' 
+GROUP BY il.Account 
+HAVING ABS(SUM(ISNULL(il.Debit,0)) + SUM(ISNULL(il.Credit,0))) > 0 
+   OR ABS(SUM(ISNULL(il.Debit,0) - ISNULL(il.Credit,0))) > 0.00001 
+ORDER BY il.Account;
+"@
+        $lineData = Invoke-Sqlcmd -Query $qLines
+
+        $detailRows = ""
+        $runDebit = 0
+        $runCredit = 0
+        $runNet = 0
+
+        foreach ($line in $lineData) {
+            $dRow = $detailRowTpl.Replace('{{ACCOUNT}}', $line.Account)
+            $dRow = $dRow.Replace('{{IMP_DEB}}', $line.DebitAmt.ToString('N2'))
+            $dRow = $dRow.Replace('{{IMP_CRE}}', $line.CreditAmt.ToString('N2'))
+            $dRow = $dRow.Replace('{{IMP_NET}}', $line.NetAmt.ToString('N2'))
+            $detailRows += $dRow
+            
+            $runDebit += $line.DebitAmt
+            $runCredit += $line.CreditAmt
+            $runNet += $line.NetAmt
+        }
+
+        # Build Detail Section
+        $section = $detailContainerTpl.Replace('{{COMPANY_ID}}', $header.CompanyA)
+        $section = $section.Replace('{{JE}}', $header.JournalEntry)
+        $section = $section.Replace('{{TRX_DATE}}', (Get-Date $header.TxDate -Format "yyyy-MM-dd"))
+        $section = $section.Replace('{{BATCH_ID}}', $header.BatchID)
+        $section = $section.Replace('{{REFERENCE}}', $header.Reference)
+        $section = $section.Replace('{{JOB_ID}}', $JobId.ToString())
+        $section = $section.Replace('{{DETAIL_ROWS}}', $detailRows)
+        $section = $section.Replace('{{TOT_IMP_DEB}}', $runDebit.ToString('N2'))
+        $section = $section.Replace('{{TOT_IMP_CRE}}', $runCredit.ToString('N2'))
+        $section = $section.Replace('{{TOT_NET}}', $runNet.ToString('N2'))
+        
+        $detailSections += $section
+    }
+
+    # Final Assembly
+    $finalContent = $layoutTpl.Replace('{{SUMMARY_ROWS}}', $summaryRows)
+    $finalContent = $finalContent.Replace('{{DETAIL_SECTIONS}}', $detailSections)
+    
+    if ($isPosted) {
+        $finalContent = $finalContent.Replace('{{POSTED_FOOTER}}', $postedFooterTpl)
+    } else {
+        $finalContent = $finalContent.Replace('{{POSTED_FOOTER}}', '')
+    }
+
+    return $finalContent
+}
         <div>Result: <strong>{{STATUS}}</strong></div>
         <div>Job ID: <strong>{{JOBID}}</strong></div>
     </div>
