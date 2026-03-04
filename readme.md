@@ -1,27 +1,39 @@
-Final Code Fix: Dynamics GP Import Reporting Utility
+I see exactly what went wrong in your screenshot. The chat interface is aggressively cutting off the right side of the code blocks. `\template.html"` got truncated into `\l"`, and all the long `.Replace()` lines ran completely off your screen, making it impossible to copy. 
 
+I also cannot put this code into a generated Studio Document for you. The document generator strictly reads from your originally uploaded files (like your `audit.txt` and images). It cannot read our chat history. When I triggered it, it had no access to our new code, which is why it spit out an empty template with broken placeholders.
+
+Since we are locked into this chat window, **I have reformatted both files to be completely vertical.** I used PowerShell line-continuations (backticks `` ` ``) so that absolutely no line goes past the middle of your screen. Nothing will truncate, and you can copy this cleanly.
+
+### 1. template.html (Vertical Format)
+```html
 <!DOCTYPE html>
 <html>
 <head>
 <style>
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 10pt; line-height: 1.5; color: #333; }
-    table { border-collapse: collapse; width: 100%; margin-top: 10px; margin-bottom: 25px; }
-    th { background-color: #E2EFDA; border: 1px solid #A9D08E; padding: 6px; text-align: left; font-size: 9pt; }
-    td { border: 1px solid #A9D08E; padding: 6px; font-size: 9pt; vertical-align: top; }
-    .right { text-align: right; }
-    .totals { font-weight: bold; background-color: #F2F2F2; }
-    .posted-msg { border-left: 4px solid #2E75B6; background-color: #DDEBF7; padding: 10px; margin-bottom: 15px; font-weight: bold; color: #1E4E79; }
-    h2 { color: #2E75B6; border-bottom: 2px solid #2E75B6; padding-bottom: 5px; margin-top: 30px; }
-    .meta { margin-bottom: 20px; }
+    body { font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 10px; color: #000; }
+    .meta-block { margin-bottom: 10px; }
+    .meta-block div { margin-bottom: 1px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
+    th, td { padding: 3px 5px; text-align: left; border-bottom: 1px solid #eee; }
+    .sum-table th { border-bottom: 1px solid #c8d8c8; background-color: #e2f0d9; }
+    .sum-table tr:nth-child(even) { background-color: #ffffff; }
+    .sum-table tr:nth-child(odd) { background-color: #f4f9f4; }
+    .det-header { font-size: 13px; font-weight: bold; margin-bottom: 5px; }
+    .det-meta td:first-child { font-weight: bold; width: 90px; }
+    .det-table th { background-color: #f0f0f0; }
+    .center { text-align: center; }
+    .right { text-align: right; font-family: 'Consolas', monospace; }
+    .totals td { border-top: 1px solid #333; font-weight: bold; }
+    .posted-msg { color: #d9534f; font-weight: bold; margin-bottom: 5px; }
 </style>
 </head>
 <body>
-    <div class="meta">
-        <strong>Filename:</strong> {{FILENAME}}<br>
-        <strong>Status:</strong> {{STATUS}}<br>
-        <strong>Job ID:</strong> {{JOBID}}
+    <div class="meta-block">
+        <div>Filename: <strong>{{FILENAME}}</strong></div>
+        <div>Result: <strong>{{STATUS}}</strong></div>
+        <div>Job ID: <strong>{{JOBID}}</strong></div>
     </div>
-    <table>
+    <table class="sum-table">
         <thead>
             <tr>
                 <th>Company</th>
@@ -39,7 +51,7 @@ Final Code Fix: Dynamics GP Import Reporting Utility
             {{SUMMARY_ROWS}}
         </tbody>
     </table>
-    {{DETAIL_SECTIONS}}
+    {{DETAIL_TABLES}}
 </body>
 </html>
 @@@SPLIT@@@
@@ -47,33 +59,37 @@ Final Code Fix: Dynamics GP Import Reporting Utility
     <td>{{COMPANY}}</td>
     <td>{{BATCH}}</td>
     <td>{{JE}}</td>
-    <td>{{REFERENCE}}</td>
+    <td>{{REF}}</td>
     <td>{{TRXDATE}}</td>
-    <td class="right">{{ROWS}}</td>
+    <td>{{ROWS}}</td>
     <td>{{STATUS}}</td>
-    <td style="text-align:center">{{REVERSAL}}</td>
-    <td style="color:red">{{ERROR}}</td>
+    <td>{{REVERSAL}}</td>
+    <td>{{ERROR}}</td>
 </tr>
 @@@SPLIT@@@
-<h2>{{COMPANY}} - Detail Report</h2>
-{{POSTED_BANNER}}
-<table style="width:auto">
-    <tr><th>Journal Entry</th><td>{{JE}}</td></tr>
-    <tr><th>TrxDate</th><td>{{TRXDATE}}</td></tr>
-    <tr><th>BatchID</th><td>{{BATCH}}</td></tr>
-    <tr><th>Reference</th><td>{{REFERENCE}}</td></tr>
-    <tr><th>RunID</th><td>{{RUNID}}</td></tr>
+<div class="det-header">{{COMPANY}}</div>
+<table class="det-meta">
+    <tr><td>Journal Entry</td><td>{{JE}}</td></tr>
+    <tr><td>TxDate</td><td>{{TRXDATE}}</td></tr>
+    <tr><td>BatchID</td><td>{{BATCH}}</td></tr>
+    <tr><td>Reference</td><td>{{REF}}</td></tr>
+    <tr><td>JobID</td><td>{{JOBID}}</td></tr>
 </table>
-<table>
+{{POSTED_MSG}}
+<table class="det-table">
     <thead>
         <tr>
-            <th>Account</th>
-            <th class="right">Import Debit</th>
-            <th class="right">Import Credit</th>
-            <th class="right">Import Net</th>
-            <th class="right">GP Debit</th>
-            <th class="right">GP Credit</th>
-            <th class="right">GP Net</th>
+            <th rowspan="2">Account</th>
+            <th colspan="3" class="center">Import File</th>
+            <th colspan="3" class="center">Dynamics GP</th>
+        </tr>
+        <tr>
+            <th class="right">Debit</th>
+            <th class="right">Credit</th>
+            <th class="right">Total</th>
+            <th class="right">Debit</th>
+            <th class="right">Credit</th>
+            <th class="right">Total</th>
         </tr>
     </thead>
     <tbody>
@@ -81,10 +97,10 @@ Final Code Fix: Dynamics GP Import Reporting Utility
         <tr class="totals">
             <td>Totals</td>
             <td class="right">{{TOT_IMP_DEB}}</td>
-            <td class="right">{{TOT_IMP_CRE}}</td>
+            <td class="right">{{TOT_IMP_CRED}}</td>
             <td class="right">{{TOT_IMP_NET}}</td>
             <td class="right">{{TOT_GP_DEB}}</td>
-            <td class="right">{{TOT_GP_CRE}}</td>
+            <td class="right">{{TOT_GP_CRED}}</td>
             <td class="right">{{TOT_GP_NET}}</td>
         </tr>
     </tbody>
@@ -93,208 +109,176 @@ Final Code Fix: Dynamics GP Import Reporting Utility
 <tr>
     <td>{{ACCOUNT}}</td>
     <td class="right">{{IMP_DEB}}</td>
-    <td class="right">{{IMP_CRE}}</td>
+    <td class="right">{{IMP_CRED}}</td>
     <td class="right">{{IMP_NET}}</td>
     <td class="right">{{GP_DEB}}</td>
-    <td class="right">{{GP_CRE}}</td>
+    <td class="right">{{GP_CRED}}</td>
     <td class="right">{{GP_NET}}</td>
 </tr>
 @@@SPLIT@@@
-<div class="posted-msg">&#9888; Note: This batch has been POSTED. Unposted Dynamics GP values are shown for comparison.</div>
+<div class="posted-msg">
+    &#9888; Note: This batch has been POSTED. Unposted details unavailable.
+</div>
+```
 
+### 2. PowerShell Script (Vertical Format, No Array Brackets)
+I fixed the `$TemplatePath` so it won't truncate to `\l`, and separated every single `.Replace()` onto its own line so the right side of the text cannot hide off your screen.
+
+```powershell
 function New-DynamicsImportJobEmailContent {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
-        [Guid]$JobId
+        [Parameter(Mandatory)][Guid]$JobId
     )
 
-    $TemplatePath = "$PSScriptRoot\template.html"
+    $TemplatePath = Join-Path $PSScriptRoot "template.html"
+    
     if (-not (Test-Path $TemplatePath)) { 
         return "<h3>Template file not found at $TemplatePath</h3>" 
     }
-
-    $templateRaw = Get-Content -Path $TemplatePath -Raw
-    $parts = $templateRaw -split '@@@SPLIT@@@'
-
-    # Execute Audit Reporting Procedure via Invoke-Sqlcmd
-    try {
-        $results = Invoke-Sqlcmd -Query "EXEC dbo.usp_ia_job_report @JobID = '$JobId'" -ErrorAction Stop
-    }
-    catch {
-        return "<h3>Error executing report query: $($_.Exception.Message)</h3>"
-    }
-
-    if ($null -eq $results -or $results.Count -eq 0) {
-        return "<h3>No data found for JobID: $JobId</h3>"
-    }
-
-    $summaryRows = ""
-    $detailSections = ""
-
-    # Global Metadata from first record for main header
-    $first = $results[0]
-    $htmlMain = $parts[0].Replace('{{FILENAME}}', $first.FileName) `
-                         .Replace('{{STATUS}}', $first.JobResult) `
-                         .Replace('{{JOBID}}', $first.JobID.ToString())
-
-    # Group results by RunID for sectional detail rendering
-    $runGroups = $results | Group-Object -Property RunID
-
-    foreach ($group in $runGroups) {
-        $run = $group.Group[0]
-
-        # 1. Map and Build Summary Table Row
-        $summaryRows += $parts[1].Replace('{{COMPANY}}', $run.CompanyA) `
-            .Replace('{{BATCH}}', $run.BatchID) `
-            .Replace('{{JE}}', $run.JournalEntry) `
-            .Replace('{{REFERENCE}}', $run.Reference) `
-            .Replace('{{TRXDATE}}', (Get-Date $run.TxDate -Format "yyyy-MM-dd")) `
-            .Replace('{{ROWS}}', $run.RowCountLine) `
-            .Replace('{{STATUS}}', $run.Status) `
-            .Replace('{{REVERSAL}}', $run.ReversalFlag) `
-            .Replace('{{ERROR}}', $run.Message)
-
-        # 2. Build Detail Section and handle Posted Status
-        $postedBanner = ""
-        if ($run.gp_Journal -isnot [System.DBNull]) {
-            $postedBanner = $parts[4]
-        }
-
-        $detailRows = ""
-        $tImpDeb = 0; $tImpCre = 0; $tImpNet = 0
-        $tGpDeb = 0; $tGpCre = 0; $tGpNet = 0
-
-        foreach ($line in $group.Group) {
-            # Data binding with specific type checks for DBNull
-            $detailRows += $parts[3].Replace('{{ACCOUNT}}', $line.Account) `
-                .Replace('{{IMP_DEB}}', ("{0:N2}" -f $line.DebitAmt)) `
-                .Replace('{{IMP_CRE}}', ("{0:N2}" -f $line.CreditAmt)) `
-                .Replace('{{IMP_NET}}', ("{0:N2}" -f $line.NetAmt)) `
-                .Replace('{{GP_DEB}}',  ("{0:N2}" -f (if($line.gp_DebitAmount -is [System.DBNull]){0}else{$line.gp_DebitAmount}))) `
-                .Replace('{{GP_CRE}}',  ("{0:N2}" -f (if($line.gp_CreditAmount -is [System.DBNull]){0}else{$line.gp_CreditAmount}))) `
-                .Replace('{{GP_NET}}',  ("{0:N2}" -f (if($line.gp_NetAmt -is [System.DBNull]){0}else{$line.gp_NetAmt})))
-
-            $tImpDeb += $line.DebitAmt
-            $tImpCre += $line.CreditAmt
-            $tImpNet += $line.NetAmt
-            
-            if ($line.gp_DebitAmount -isnot [System.DBNull]) { $tGpDeb += $line.gp_DebitAmount }
-            if ($line.gp_CreditAmount -isnot [System.DBNull]) { $tGpCre += $line.gp_CreditAmount }
-            if ($line.gp_NetAmt -isnot [System.DBNull]) { $tGpNet += $line.gp_NetAmt }
-        }
-
-        # Apply Run-level placeholders to the detail section template
-        $section = $parts[2].Replace('{{COMPANY}}', $run.CompanyA) `
-            .Replace('{{POSTED_BANNER}}', $postedBanner) `
-            .Replace('{{JE}}', $run.JournalEntry) `
-            .Replace('{{TRXDATE}}', (Get-Date $run.TxDate -Format "yyyy-MM-dd")) `
-            .Replace('{{BATCH}}', $run.BatchID) `
-            .Replace('{{REFERENCE}}', $run.Reference) `
-            .Replace('{{RUNID}}', $run.RunID.ToString()) `
-            .Replace('{{DETAIL_ROWS}}', $detailRows) `
-            .Replace('{{TOT_IMP_DEB}}', ("{0:N2}" -f $tImpDeb)) `
-            .Replace('{{TOT_IMP_CRE}}', ("{0:N2}" -f $tImpCre)) `
-            .Replace('{{TOT_IMP_NET}}', ("{0:N2}" -f $tImpNet)) `
-            .Replace('{{TOT_GP_DEB}}',  ("{0:N2}" -f $tGpDeb)) `
-            .Replace('{{TOT_GP_CRE}}',  ("{0:N2}" -f $tGpCre)) `
-            .Replace('{{TOT_GP_NET}}',  ("{0:N2}" -f $tGpNet))
-
-        $detailSections += $section
-    }
-
-    # Final HTML Assembly for return
-    return $htmlMain.Replace('{{SUMMARY_ROWS}}', $summaryRows).Replace('{{DETAIL_SECTIONS}}', $detailSections)
-}
-Path</h3>" }
     
-    # 1. Read the template and split it into an array (No Regex)
     $rawHtml = Get-Content -Path $TemplatePath -Raw
-    $tplArray = $rawHtml -split '<!--===SPLIT===-->'
+    
+    # 1. Unpack templates safely
+    $mainTpl, $sumRowTpl, $detBlockTpl, $detRowTpl, $postedMsgTpl = 
+        $rawHtml -split '@@@SPLIT@@@'
 
-    $mainTpl      = $tplArray.Trim()
-    $sumRowTpl    = $tplArray.Trim()
-    $detBlockTpl  = $tplArray.Trim()
-    $detRowTpl    = $tplArray.Trim()
-    $postedMsgTpl = $tplArray.Trim()
+    $mainTpl      = $mainTpl.Trim()
+    $sumRowTpl    = $sumRowTpl.Trim()
+    $detBlockTpl  = $detBlockTpl.Trim()
+    $detRowTpl    = $detRowTpl.Trim()
+    $postedMsgTpl = $postedMsgTpl.Trim()
 
     # 2. Query Database
     $query = "EXEC dbo.usp_ia_job_report @JobID = '$JobId'"
     try { 
-        $auditData = Invoke-Sqlcmd -ServerInstance $sqlconfig.server -Database $sqlconfig.database -TrustServerCertificate -Query $query 
+        $auditData = Invoke-Sqlcmd `
+            -ServerInstance $sqlconfig.server `
+            -Database $sqlconfig.database `
+            -TrustServerCertificate `
+            -Query $query 
     } catch { 
-        return "<h3 style='color:red;'>Error retrieving data: $($_.Exception.Message)</h3>" 
+        return "<h3>Error: $($_.Exception.Message)</h3>" 
     }
     
-    if (-not $auditData) { return "<h3>No audit data found for JobID: $JobId</h3>" }
+    if (-not $auditData) { return "<h3>No data for JobID: $JobId</h3>" }
 
     $firstGlobal = $auditData | Select-Object -First 1
-    $fileName = if ($firstGlobal.FILENAME) { $firstGlobal.FILENAME } else { "Unknown" }
-    $jobResult = if ($firstGlobal.STATUS) { $firstGlobal.STATUS } else { "Unknown" }
+    
+    $fileName = "Unknown"
+    if ($firstGlobal.FILENAME) { $fileName = $firstGlobal.FILENAME }
+    
+    $jobResult = "Unknown"
+    if ($firstGlobal.STATUS) { $jobResult = $firstGlobal.STATUS }
 
     $summaryRows = ""
     $detailTables = ""
 
-    # Group runs for processing
     $runs = $auditData | Group-Object -Property RunID
     
     foreach ($run in $runs) {
         $group = $run.Group
         $first = $group | Select-Object -First 1
-        $trxDateStr = if ($first.TrxDate -is [DateTime]) { $first.TrxDate.ToString("yyyy-MM-dd") } else { $first.TrxDate }
+        
+        $trxDateStr = $first.TrxDate
+        if ($first.TrxDate -is [DateTime]) { 
+            $trxDateStr = $first.TrxDate.ToString("yyyy-MM-dd") 
+        }
+        
         $rowCount = ($group | Measure-Object).Count
 
-        # --- Generate Summary Row ---
-        $summaryRows += $sumRowTpl.Replace('{{COMPANY}}', $first.CompanyA).Replace('{{BATCH}}', $first.BatchID).Replace('{{JE}}', $first.JournalEntry).Replace('{{REF}}', $first.Reference).Replace('{{TRXDATE}}', $trxDateStr).Replace('{{ROWS}}', $rowCount).Replace('{{STATUS}}', $first.STATUS).Replace('{{REVERSAL}}', $first.ReversalFlag).Replace('{{ERROR}}', $first.MESSAGE)
+        # Replace wrapped safely so it doesn't run off screen
+        $summaryRows += $sumRowTpl `
+            .Replace('{{COMPANY}}',  "$($first.CompanyA)") `
+            .Replace('{{BATCH}}',    "$($first.BatchID)") `
+            .Replace('{{JE}}',       "$($first.JournalEntry)") `
+            .Replace('{{REF}}',      "$($first.Reference)") `
+            .Replace('{{TRXDATE}}',  "$trxDateStr") `
+            .Replace('{{ROWS}}',     "$rowCount") `
+            .Replace('{{STATUS}}',   "$($first.STATUS)") `
+            .Replace('{{REVERSAL}}', "$($first.ReversalFlag)") `
+            .Replace('{{ERROR}}',    "$($first.MESSAGE)")
 
-        # --- Handle POSTED Logic ---
-        $isPosted = ($first.STATUS -match 'POSTED') -or ([string]::IsNullOrWhiteSpace($first.gp_Journal) -and $first.STATUS -notmatch 'ERROR')
-        $injectPostedMsg = if ($isPosted) { $postedMsgTpl } else { "" }
+        $isPosted = ($first.STATUS -match 'POSTED') -or 
+                    ([string]::IsNullOrWhiteSpace($first.gp_Journal) -and 
+                    $first.STATUS -notmatch 'ERROR')
+        
+        $injectPostedMsg = ""
+        if ($isPosted) { $injectPostedMsg = $postedMsgTpl }
 
         $sumImpDeb = 0; $sumImpCred = 0; $sumImpNet = 0
-        $sumGpDeb = 0; $sumGpCred = 0; $sumGpNet = 0
+        $sumGpDeb = 0;  $sumGpCred = 0;  $sumGpNet = 0
         $detailRowsOut = ""
 
-        # --- Loop Lines & Safely Sum ---
         $accounts = $group | Group-Object -Property Account
         foreach ($acc in $accounts) {
             $accName = ($acc.Group | Select-Object -First 1).Account
             $impDeb = 0; $impCred = 0; $impNet = 0
-            $gpDeb = 0; $gpCred = 0; $gpNet = 0
+            $gpDeb = 0;  $gpCred = 0;  $gpNet = 0
 
             foreach ($row in $acc.Group) {
-                if ($null -ne $row.DebitAmt -and $row.DebitAmt -isnot [System.DBNull]) { $impDeb += $row.DebitAmt }
-                if ($null -ne $row.CreditAmt -and $row.CreditAmt -isnot [System.DBNull]) { $impCred += $row.CreditAmt }
-                if ($null -ne $row.NetAmt -and $row.NetAmt -isnot [System.DBNull]) { $impNet += $row.NetAmt }
-                
-                if ($null -ne $row.gp_DebitAmount -and $row.gp_DebitAmount -isnot [System.DBNull]) { $gpDeb += $row.gp_DebitAmount }
-                if ($null -ne $row.gp_CreditAmount -and $row.gp_CreditAmount -isnot [System.DBNull]) { $gpCred += $row.gp_CreditAmount }
+                if ($row.DebitAmt -isnot [System.DBNull]) { 
+                    $impDeb += $row.DebitAmt 
+                }
+                if ($row.CreditAmt -isnot [System.DBNull]) { 
+                    $impCred += $row.CreditAmt 
+                }
+                if ($row.NetAmt -isnot [System.DBNull]) { 
+                    $impNet += $row.NetAmt 
+                }
+                if ($row.gp_DebitAmount -isnot [System.DBNull]) { 
+                    $gpDeb += $row.gp_DebitAmount 
+                }
+                if ($row.gp_CreditAmount -isnot [System.DBNull]) { 
+                    $gpCred += $row.gp_CreditAmount 
+                }
             }
             $gpNet = $gpDeb - $gpCred
             
             $sumImpDeb += $impDeb; $sumImpCred += $impCred; $sumImpNet += $impNet
-            $sumGpDeb += $gpDeb; $sumGpCred += $gpCred; $sumGpNet += $gpNet
+            $sumGpDeb  += $gpDeb;  $sumGpCred  += $gpCred;  $sumGpNet  += $gpNet
 
-            # Format amounts or substitute hyphens if posted
             $gpDebStr  = if ($isPosted) { "-" } else { "{0:N2}" -f $gpDeb }
             $gpCredStr = if ($isPosted) { "-" } else { "{0:N2}" -f $gpCred }
             $gpNetStr  = if ($isPosted) { "-" } else { "{0:N2}" -f $gpNet }
 
-            # Inject row data
-            $detailRowsOut += $detRowTpl.Replace('{{ACCOUNT}}', $accName).Replace('{{IMP_DEB}}', ("{0:N2}" -f $impDeb)).Replace('{{IMP_CRED}}', ("{0:N2}" -f $impCred)).Replace('{{IMP_NET}}', ("{0:N2}" -f $impNet)).Replace('{{GP_DEB}}', $gpDebStr).Replace('{{GP_CRED}}', $gpCredStr).Replace('{{GP_NET}}', $gpNetStr)
+            $detailRowsOut += $detRowTpl `
+                .Replace('{{ACCOUNT}}',  "$accName") `
+                .Replace('{{IMP_DEB}}',  ("{0:N2}" -f $impDeb)) `
+                .Replace('{{IMP_CRED}}', ("{0:N2}" -f $impCred)) `
+                .Replace('{{IMP_NET}}',  ("{0:N2}" -f $impNet)) `
+                .Replace('{{GP_DEB}}',   "$gpDebStr") `
+                .Replace('{{GP_CRED}}',  "$gpCredStr") `
+                .Replace('{{GP_NET}}',   "$gpNetStr")
         }
 
-        # Format Subtotals
         $totGpDebStr  = if ($isPosted) { "-" } else { "{0:N2}" -f $sumGpDeb }
         $totGpCredStr = if ($isPosted) { "-" } else { "{0:N2}" -f $sumGpCred }
         $totGpNetStr  = if ($isPosted) { "-" } else { "{0:N2}" -f $sumGpNet }
 
-        # --- Generate Entire Detail Block ---
-        $detailTables += $detBlockTpl.Replace('{{COMPANY}}', $first.CompanyA).Replace('{{JE}}', $first.JournalEntry).Replace('{{TRXDATE}}', $trxDateStr).Replace('{{BATCH}}', $first.BatchID).Replace('{{REF}}', $first.Reference).Replace('{{JOBID}}', $JobId.ToString()).Replace('{{POSTED_MSG}}', $injectPostedMsg).Replace('{{DETAIL_ROWS}}', $detailRowsOut).Replace('{{TOT_IMP_DEB}}', ("{0:N2}" -f $sumImpDeb)).Replace('{{TOT_IMP_CRED}}', ("{0:N2}" -f $sumImpCred)).Replace('{{TOT_IMP_NET}}', ("{0:N2}" -f $sumImpNet)).Replace('{{TOT_GP_DEB}}', $totGpDebStr).Replace('{{TOT_GP_CRED}}', $totGpCredStr).Replace('{{TOT_GP_NET}}', $totGpNetStr)
+        $detailTables += $detBlockTpl `
+            .Replace('{{COMPANY}}',      "$($first.CompanyA)") `
+            .Replace('{{JE}}',           "$($first.JournalEntry)") `
+            .Replace('{{TRXDATE}}',      "$trxDateStr") `
+            .Replace('{{BATCH}}',        "$($first.BatchID)") `
+            .Replace('{{REF}}',          "$($first.Reference)") `
+            .Replace('{{JOBID}}',        "$JobId") `
+            .Replace('{{POSTED_MSG}}',   "$injectPostedMsg") `
+            .Replace('{{DETAIL_ROWS}}',  "$detailRowsOut") `
+            .Replace('{{TOT_IMP_DEB}}',  ("{0:N2}" -f $sumImpDeb)) `
+            .Replace('{{TOT_IMP_CRED}}', ("{0:N2}" -f $sumImpCred)) `
+            .Replace('{{TOT_IMP_NET}}',  ("{0:N2}" -f $sumImpNet)) `
+            .Replace('{{TOT_GP_DEB}}',   "$totGpDebStr") `
+            .Replace('{{TOT_GP_CRED}}',  "$totGpCredStr") `
+            .Replace('{{TOT_GP_NET}}',   "$totGpNetStr")
     }
 
-    # 3. Final Output Injection
-    $finalHtml = $mainTpl.Replace('{{FILENAME}}', $fileName).Replace('{{STATUS}}', $jobResult).Replace('{{JOBID}}', $JobId.ToString()).Replace('{{SUMMARY_ROWS}}', $summaryRows).Replace('{{DETAIL_TABLES}}', $detailTables)
+    $finalHtml = $mainTpl `
+        .Replace('{{FILENAME}}',      "$fileName") `
+        .Replace('{{STATUS}}',        "$jobResult") `
+        .Replace('{{JOBID}}',         "$JobId") `
+        .Replace('{{SUMMARY_ROWS}}',  "$summaryRows") `
+        .Replace('{{DETAIL_TABLES}}', "$detailTables")
 
     return $finalHtml
 }
