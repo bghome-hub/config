@@ -1,4 +1,4 @@
-CREATE PROCEDURE dbo.usp_IC_ValidateRules
+CREATE PROCEDURE dbo.usp_IC_PostEconnect
 (
     @JobId UNIQUEIDENTIFIER
 )
@@ -6,261 +6,153 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @StepName VARCHAR(50) = 'VAL_INIT';
+    DECLARE @StepName VARCHAR(50) = 'POST_INIT';
     DECLARE @LogMsg VARCHAR(MAX);
-    DECLARE @FileName NVARCHAR(260);
+
+    DECLARE @HeaderId INT, @Company VARCHAR(20), @BatchId CHAR(15);
+    DECLARE @TrxDate DATE, @RevDate DATE, @RevFlag CHAR(1);
+    DECLARE @DynSql NVARCHAR(MAX);
 
     BEGIN TRY
-        SELECT @FileName = FileName FROM dbo.IC_ImportJob WHERE JobId = @JobId;
-
-        SET @LogMsg = 'Starting validation rules for JobId: ' + CAST(@JobId AS VARCHAR(36));
+        SET @LogMsg = 'Starting eConnect execution phase for JobId: ' + CAST(@JobId AS VARCHAR(36));
         INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
 
-        -- ==============================================================================
-        -- PHASE 1: JOB-LEVEL FATAL CHECKS
-        -- ==============================================================================
-        SET @StepName = 'VAL_FILE_FLAGS';
-        
-        IF EXISTS (
-            SELECT 1 FROM dbo.IC_StagingRaw 
-            WHERE JobId = @JobId AND UPPER(LTRIM(RTRIM(ReversalFlag))) NOT IN ('Y', 'N')
-        )
-        OR 
-        (SELECT COUNT(DISTINCT UPPER(LTRIM(RTRIM(ReversalFlag)))) FROM dbo.IC_StagingRaw WHERE JobId = @JobId) > 1
-        BEGIN
-            UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
-            
-            SET @LogMsg = 'Mixed or invalid ReversalFlag values. Entire job rejected.';
-            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'FATAL', @StepName, @LogMsg);
-            RETURN;
-        END
+        -- Open the cursor ONLY for pristine, VALIDATED batches
+        SET @StepName = 'OPEN_CURSOR';
+        DECLARE PostCursor CURSOR LOCAL FAST_FORWARD FOR
+            SELECT HeaderId, Company, BatchId, TrxDate, ReversalDate, ReversalFlag
+            FROM dbo.IC_CompanyHeader
+            WHERE JobId = @JobId AND HeaderStatus = 'VALIDATED';
 
-        DECLARE @JobRevFlag CHAR(1) = (SELECT TOP 1 UPPER(LTRIM(RTRIM(ReversalFlag))) FROM dbo.IC_StagingRaw WHERE JobId = @JobId);
-
-        -- ==============================================================================
-        -- PHASE 2: PROMOTION (STAGING -> HEADER & DETAIL)
-        -- ==============================================================================
-        SET @StepName = 'PROMOTE_HEADERS';
-        
-        -- 2A. Build the Company Headers (FileSection built here)
-        INSERT INTO dbo.IC_CompanyHeader (JobId, Company, FileSection, ReversalFlag, TrxDate, HeaderStatus)
-        SELECT 
-            @JobId,
-            LTRIM(RTRIM(Company)),
-            CONCAT(@FileName, ' | Company=', LTRIM(RTRIM(Company))),
-            @JobRevFlag,
-            MIN(TRY_CAST(TrxDate AS DATE)), 
-            'PENDING'
-        FROM dbo.IC_StagingRaw
-        WHERE JobId = @JobId
-        GROUP BY LTRIM(RTRIM(Company));
-
-        IF @JobRevFlag = 'Y'
-        BEGIN
-            UPDATE dbo.IC_CompanyHeader
-            SET ReversalDate = DATEADD(DAY, 1, EOMONTH(TrxDate))
-            WHERE JobId = @JobId;
-        END
-
-        -- 2B. Build the Detail Lines
-        SET @StepName = 'PROMOTE_LINES';
-        INSERT INTO dbo.IC_DetailLine (HeaderId, JobId, Account, AcctDesc, TrxDate, Reference, DebitAmount, CreditAmount)
-        SELECT 
-            h.HeaderId,
-            @JobId,
-            CONVERT(CHAR(129), LTRIM(RTRIM(s.Account))), 
-            s.AcctDesc,
-            TRY_CAST(s.TrxDate AS DATE),
-            s.Reference,
-            CASE WHEN TRY_CAST(REPLACE(s.Amount, ',', '') AS NUMERIC(19,5)) > 0 THEN TRY_CAST(REPLACE(s.Amount, ',', '') AS NUMERIC(19,5)) ELSE 0 END,
-            CASE WHEN TRY_CAST(REPLACE(s.Amount, ',', '') AS NUMERIC(19,5)) < 0 THEN ABS(TRY_CAST(REPLACE(s.Amount, ',', '') AS NUMERIC(19,5))) ELSE 0 END
-        FROM dbo.IC_StagingRaw s
-        INNER JOIN dbo.IC_CompanyHeader h ON LTRIM(RTRIM(s.Company)) = h.Company AND h.JobId = @JobId
-        WHERE s.JobId = @JobId;
-
-        -- 2C. Update Header Aggregates for Reporting
-        SET @StepName = 'UPDATE_AGGREGATES';
-        UPDATE h
-        SET LineCount = (SELECT COUNT(*) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId),
-            TotalAmount = (SELECT SUM(DebitAmount) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId)
-        FROM dbo.IC_CompanyHeader h
-        WHERE h.JobId = @JobId;
-
-        -- ==============================================================================
-        -- PHASE 3: THE DUPLICATE GUARD (CONTENT HASHING)
-        -- ==============================================================================
-        SET @StepName = 'HASH_PAYLOAD';
-        
-        UPDATE h
-        SET ContentHash = HASHBYTES('SHA2_256', 
-            (
-                SELECT Account, TrxDate, DebitAmount, CreditAmount, Reference
-                FROM dbo.IC_DetailLine l
-                WHERE l.HeaderId = h.HeaderId
-                ORDER BY Account, TrxDate, DebitAmount, CreditAmount
-                FOR JSON PATH, INCLUDE_NULL_VALUES
-            )
-        )
-        FROM dbo.IC_CompanyHeader h
-        WHERE h.JobId = @JobId;
-
-        UPDATE current_h
-        SET HeaderStatus = 'SKIPPED'
-        FROM dbo.IC_CompanyHeader current_h
-        INNER JOIN dbo.IC_CompanyHeader past_h 
-            ON current_h.ContentHash = past_h.ContentHash
-            AND past_h.HeaderStatus = 'POSTED'
-            AND current_h.Company = past_h.Company
-        WHERE current_h.JobId = @JobId;
-
-        IF EXISTS (SELECT 1 FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'SKIPPED')
-        BEGIN
-            SET @LogMsg = 'One or more company payloads match a previously POSTED batch. Marked SKIPPED.';
-            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'WARN', @StepName, @LogMsg);
-        END
-
-        -- ==============================================================================
-        -- PHASE 4: MATH & BUSINESS RULES
-        -- ==============================================================================
-        SET @StepName = 'VAL_MATH_RULES';
-        
-        -- Rule 1: Exactly one TrxDate per company
-        UPDATE h
-        SET HeaderStatus = 'FAILED'
-        FROM dbo.IC_CompanyHeader h
-        WHERE h.JobId = @JobId AND h.HeaderStatus = 'PENDING'
-        AND (SELECT COUNT(DISTINCT TrxDate) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId) <> 1;
-
-        SET @LogMsg = 'Company batch contains multiple Transaction Dates.';
-        INSERT INTO dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
-        SELECT @JobId, HeaderId, 'ERROR', @StepName, @LogMsg
-        FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'FAILED' 
-        AND HeaderId NOT IN (SELECT HeaderId FROM dbo.IC_SystemLog WHERE JobId = @JobId);
-
-        -- Rule 2: Debits must equal Credits
-        UPDATE h
-        SET HeaderStatus = 'FAILED'
-        FROM dbo.IC_CompanyHeader h
-        WHERE h.JobId = @JobId AND h.HeaderStatus = 'PENDING'
-        AND (SELECT SUM(DebitAmount) - SUM(CreditAmount) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId) <> 0;
-
-        SET @LogMsg = 'Company batch does not balance (Debits <> Credits).';
-        INSERT INTO dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
-        SELECT @JobId, HeaderId, 'ERROR', @StepName, @LogMsg
-        FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'FAILED'
-        AND HeaderId NOT IN (SELECT HeaderId FROM dbo.IC_SystemLog WHERE JobId = @JobId);
-
-        -- ==============================================================================
-        -- PHASE 5: DYNAMICS GP CROSS-DATABASE CHECKS
-        -- ==============================================================================
-        SET @StepName = 'VAL_GP_CROSSCHECK';
-        
-        DECLARE @DynamicCo VARCHAR(20);
-        DECLARE @DynSql NVARCHAR(MAX);
-
-        DECLARE CoCursor CURSOR LOCAL FAST_FORWARD FOR 
-            SELECT DISTINCT Company FROM dbo.IC_CompanyHeader 
-            WHERE JobId = @JobId AND HeaderStatus = 'PENDING';
-
-        OPEN CoCursor;
-        FETCH NEXT FROM CoCursor INTO @DynamicCo;
+        OPEN PostCursor;
+        FETCH NEXT FROM PostCursor INTO @HeaderId, @Company, @BatchId, @TrxDate, @RevDate, @RevFlag;
 
         WHILE @@FETCH_STATUS = 0
         BEGIN
+            SET @StepName = 'EXEC_DYN_ECONNECT';
+            SET @LogMsg = 'Attempting to post BatchId ' + LTRIM(RTRIM(@BatchId)) + ' to Company ' + LTRIM(RTRIM(@Company));
+            INSERT INTO dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage) VALUES (@JobId, @HeaderId, 'INFO', @StepName, @LogMsg);
+
+            -- Wrap the entire eConnect logic in dynamic SQL targeting the specific company DB
             SET @DynSql = N'
-            USE ' + QUOTENAME(@DynamicCo) + N';
+            USE ' + QUOTENAME(@pCompany) + N';
+            
+            DECLARE @Err INT = 0, @ErrStr VARCHAR(255) = '''';
+            DECLARE @JE CHAR(13);
+            DECLARE @Seq INT = 16384;
+            DECLARE @DynStep VARCHAR(50) = ''GET_JE'';
+            DECLARE @DynLog VARCHAR(MAX);
+            
+            BEGIN TRY
+                -- 1. Get Next Journal Entry Number
+                EXEC taGetNextJournalEntry @I_vInc_Dec = 1, @O_vJournalEntryNumber = @JE OUTPUT, @O_iErrorState = @Err OUTPUT;
+                IF (@Err <> 0 OR @JE IS NULL) THROW 50001, ''taGetNextJournalEntry failed to return a valid Journal Entry.'', 1;
 
-            -- Check 1: TrxDate Period
-            UPDATE h
-            SET h.HeaderStatus = ''FAILED''
-            FROM DYNAMICS.dbo.IC_CompanyHeader h
-            WHERE h.JobId = @pJobId AND h.Company = @pCompany AND h.HeaderStatus = ''PENDING''
-            AND NOT EXISTS (
-                SELECT 1 FROM dbo.SY40100 p 
-                WHERE p.SERIES = 2 AND p.CLOSED = 0 
-                AND h.TrxDate BETWEEN p.PERIODDT AND p.PERDENDT
-            );
+                -- 2. Insert Detail Lines via Cursor
+                SET @DynStep = ''INSERT_LINES'';
+                DECLARE @Acct CHAR(129), @Ref VARCHAR(30), @Deb NUMERIC(19,5), @Cred NUMERIC(19,5);
+                
+                DECLARE LineCursor CURSOR LOCAL FAST_FORWARD FOR
+                    SELECT Account, Reference, DebitAmount, CreditAmount
+                    FROM DYNAMICS.dbo.IC_DetailLine
+                    WHERE HeaderId = @pHeaderId;
+                    
+                OPEN LineCursor;
+                FETCH NEXT FROM LineCursor INTO @Acct, @Ref, @Deb, @Cred;
+                
+                WHILE @@FETCH_STATUS = 0
+                BEGIN
+                    SET @Err = 0; SET @ErrStr = '''';
+                    EXEC taGLTransactionLineInsert
+                        @I_vBACHNUMB = @pBatch, @I_vJRNENTRY = @JE, @I_vSQNCLINE = @Seq,
+                        @I_vACTNUMST = @Acct, @I_vDEBITAMT = @Deb, @I_vCRDTAMNT = @Cred,
+                        @I_vDOCDATE = @pTrxDate, @I_vDSCRIPTN = @Ref,
+                        @O_iErrorState = @Err OUTPUT, @oErrString = @ErrStr OUTPUT;
+                    
+                    IF (@Err <> 0) THROW 50002, ''taGLTransactionLineInsert failed. Review eConnect Error State.'', 1;
+                    
+                    SET @Seq = @Seq + 16384;
+                    FETCH NEXT FROM LineCursor INTO @Acct, @Ref, @Deb, @Cred;
+                END
+                CLOSE LineCursor; DEALLOCATE LineCursor;
 
-            INSERT INTO DYNAMICS.dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
-            SELECT @pJobId, HeaderId, ''ERROR'', ''VAL_PERIOD'', ''Transaction Date period is closed or does not exist.''
-            FROM DYNAMICS.dbo.IC_CompanyHeader 
-            WHERE JobId = @pJobId AND Company = @pCompany AND HeaderStatus = ''FAILED''
-            AND HeaderId NOT IN (SELECT HeaderId FROM DYNAMICS.dbo.IC_SystemLog WHERE JobId = @pJobId);
+                -- 3. Insert Header
+                SET @DynStep = ''INSERT_HEADER'';
+                SET @Err = 0; SET @ErrStr = '''';
+                
+                IF @pRevFlag = ''Y''
+                BEGIN
+                    EXEC taGLTransactionHeaderInsert
+                        @I_vBACHNUMB = @pBatch, @I_vJRNENTRY = @JE, @I_vREFRENCE = ''Intracompany Upload'',
+                        @I_vTRXDATE = @pTrxDate, @I_vTRXTYPE = 1, @I_vSOURCDOC = ''GJ'', @I_vRVRSNGDT = @pRevDate,
+                        @O_iErrorState = @Err OUTPUT, @oErrString = @ErrStr OUTPUT;
+                END
+                ELSE
+                BEGIN
+                    EXEC taGLTransactionHeaderInsert
+                        @I_vBACHNUMB = @pBatch, @I_vJRNENTRY = @JE, @I_vREFRENCE = ''Intracompany Upload'',
+                        @I_vTRXDATE = @pTrxDate, @I_vTRXTYPE = 0, @I_vSOURCDOC = ''GJ'',
+                        @O_iErrorState = @Err OUTPUT, @oErrString = @ErrStr OUTPUT;
+                END
+                
+                IF (@Err <> 0) THROW 50003, ''taGLTransactionHeaderInsert failed. Review eConnect Error State.'', 1;
 
-            -- Check 2: ReversalDate Period
-            UPDATE h
-            SET h.HeaderStatus = ''FAILED''
-            FROM DYNAMICS.dbo.IC_CompanyHeader h
-            WHERE h.JobId = @pJobId AND h.Company = @pCompany AND h.HeaderStatus = ''PENDING''
-            AND h.ReversalFlag = ''Y''
-            AND NOT EXISTS (
-                SELECT 1 FROM dbo.SY40100 p 
-                WHERE p.SERIES = 2 AND p.CLOSED = 0 
-                AND h.ReversalDate BETWEEN p.PERIODDT AND p.PERDENDT
-            );
+                -- 4. Success: Stamp the JE back to the Header table
+                SET @DynStep = ''POST_SUCCESS'';
+                UPDATE DYNAMICS.dbo.IC_CompanyHeader 
+                SET JournalEntry = CAST(LTRIM(RTRIM(@JE)) AS INT), HeaderStatus = ''POSTED''
+                WHERE HeaderId = @pHeaderId;
 
-            INSERT INTO DYNAMICS.dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
-            SELECT @pJobId, HeaderId, ''ERROR'', ''VAL_REV_PERIOD'', ''Reversal Date period is closed or does not exist.''
-            FROM DYNAMICS.dbo.IC_CompanyHeader 
-            WHERE JobId = @pJobId AND Company = @pCompany AND HeaderStatus = ''FAILED''
-            AND HeaderId NOT IN (SELECT HeaderId FROM DYNAMICS.dbo.IC_SystemLog WHERE JobId = @pJobId);
+                SET @DynLog = ''Successfully posted Journal Entry '' + LTRIM(RTRIM(@JE)) + '' to batch '' + LTRIM(RTRIM(@pBatch));
+                INSERT INTO DYNAMICS.dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
+                VALUES (@pJobId, @pHeaderId, ''INFO'', @DynStep, @DynLog);
 
-            -- Check 3: Account Exists & Active
-            UPDATE h
-            SET h.HeaderStatus = ''FAILED''
-            FROM DYNAMICS.dbo.IC_CompanyHeader h
-            WHERE h.JobId = @pJobId AND h.Company = @pCompany AND h.HeaderStatus = ''PENDING''
-            AND EXISTS (
-                SELECT 1 FROM DYNAMICS.dbo.IC_DetailLine l
-                LEFT JOIN dbo.GL00105 a ON l.Account = a.ACTNUMST
-                LEFT JOIN dbo.GL00100 m ON a.ACTINDX = m.ACTINDX
-                WHERE l.HeaderId = h.HeaderId
-                AND (a.ACTNUMST IS NULL OR m.ACTIVE = 0)
-            );
+            END TRY
+            BEGIN CATCH
+                -- eConnect or SQL Exception Handler (Isolated to this Company)
+                DECLARE @GPError VARCHAR(MAX) = ERROR_MESSAGE();
+                
+                UPDATE DYNAMICS.dbo.IC_CompanyHeader 
+                SET HeaderStatus = ''FAILED''
+                WHERE HeaderId = @pHeaderId;
 
-            INSERT INTO DYNAMICS.dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
-            SELECT @pJobId, HeaderId, ''ERROR'', ''VAL_ACCOUNT'', ''One or more accounts do not exist or are inactive in GP.''
-            FROM DYNAMICS.dbo.IC_CompanyHeader 
-            WHERE JobId = @pJobId AND Company = @pCompany AND HeaderStatus = ''FAILED''
-            AND HeaderId NOT IN (SELECT HeaderId FROM DYNAMICS.dbo.IC_SystemLog WHERE JobId = @pJobId);
+                SET @DynLog = ''eConnect Exception: '' + @GPError;
+                INSERT INTO DYNAMICS.dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
+                VALUES (@pJobId, @pHeaderId, ''ERROR'', @DynStep, @DynLog);
+                
+                -- Cleanup cursor if it crashed mid-loop
+                IF CURSOR_STATUS(''local'', ''LineCursor'') >= -1
+                BEGIN
+                    CLOSE LineCursor; DEALLOCATE LineCursor;
+                END
+            END CATCH
             ';
 
-            EXEC sp_executesql @DynSql, 
-                N'@pJobId UNIQUEIDENTIFIER, @pCompany VARCHAR(20)', 
-                @pJobId = @JobId, @pCompany = @DynamicCo;
+            -- Execute the dynamic SQL safely
+            EXEC sp_executesql @DynSql,
+                N'@pJobId UNIQUEIDENTIFIER, @pHeaderId INT, @pCompany VARCHAR(20), @pBatch CHAR(15), @pTrxDate DATE, @pRevDate DATE, @pRevFlag CHAR(1)',
+                @pJobId = @JobId, @pHeaderId = @HeaderId, @pCompany = @Company, @pBatch = @BatchId, @pTrxDate = @TrxDate, @pRevDate = @RevDate, @pRevFlag = @RevFlag;
 
-            FETCH NEXT FROM CoCursor INTO @DynamicCo;
+            FETCH NEXT FROM PostCursor INTO @HeaderId, @Company, @BatchId, @TrxDate, @RevDate, @RevFlag;
         END
 
-        CLOSE CoCursor;
-        DEALLOCATE CoCursor;
+        CLOSE PostCursor; DEALLOCATE PostCursor;
 
         -- ==============================================================================
-        -- PHASE 6: FINALIZE
+        -- PHASE 5: EVALUATE FINAL JOB OUTCOME
         -- ==============================================================================
-        SET @StepName = 'VAL_FINALIZE';
+        SET @StepName = 'POST_FINALIZE';
         
-        -- Promote survivors
-        UPDATE dbo.IC_CompanyHeader
-        SET HeaderStatus = 'VALIDATED'
-        WHERE JobId = @JobId AND HeaderStatus = 'PENDING';
-
-        -- Generate BatchIds
-        UPDATE dbo.IC_CompanyHeader
-        SET BatchId = 'GLTX' + RIGHT(REPLICATE('0', 8) + CAST(NEXT VALUE FOR dbo.IC_BatchSeq AS VARCHAR(32)), 8)
-        WHERE JobId = @JobId AND HeaderStatus = 'VALIDATED';
-
-        -- Final Job Status
-        IF EXISTS (SELECT 1 FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'VALIDATED')
+        IF NOT EXISTS (SELECT 1 FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus IN ('FAILED', 'PENDING'))
         BEGIN
-            UPDATE dbo.IC_ImportJob SET JobStatus = 'VALIDATED' WHERE JobId = @JobId;
-            SET @LogMsg = 'Validation complete. Found VALIDATED batches ready for GP.';
+            UPDATE dbo.IC_ImportJob SET JobStatus = 'POSTED' WHERE JobId = @JobId;
+            SET @LogMsg = 'All batches successfully pushed to Dynamics GP.';
             INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
         END
         ELSE
         BEGIN
-            UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
-            SET @LogMsg = 'Validation complete. Zero batches survived the validation gauntlet.';
+            UPDATE dbo.IC_ImportJob SET JobStatus = 'PARTIAL' WHERE JobId = @JobId;
+            SET @LogMsg = 'Execution finished with mixed results. Check HeaderStatus for FAILED batches.';
             INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'WARN', @StepName, @LogMsg);
         END
 
@@ -270,13 +162,13 @@ BEGIN
         
         UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
 
-        SET @LogMsg = 'Validation Exception: ' + @ErrMessage;
+        SET @LogMsg = 'Post eConnect Exception: ' + @ErrMessage;
         INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage)
         VALUES (@JobId, 'FATAL', @StepName, @LogMsg);
         
-        IF CURSOR_STATUS('local', 'CoCursor') >= -1
+        IF CURSOR_STATUS('local', 'PostCursor') >= -1
         BEGIN
-            CLOSE CoCursor; DEALLOCATE CoCursor;
+            CLOSE PostCursor; DEALLOCATE PostCursor;
         END
     END CATCH
 END
