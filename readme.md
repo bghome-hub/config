@@ -1,65 +1,268 @@
-CREATE PROCEDURE dbo.usp_IC_ProcessCsv
+CREATE PROCEDURE dbo.usp_IC_ValidateRules
 (
-    @CsvPath NVARCHAR(4000),
-    @JobId UNIQUEIDENTIFIER OUTPUT
+    @JobId UNIQUEIDENTIFIER
 )
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @StepName VARCHAR(50) = 'INIT_JOB';
+    DECLARE @StepName VARCHAR(50) = 'VAL_INIT';
     DECLARE @LogMsg VARCHAR(MAX);
-    DECLARE @FileName NVARCHAR(260) = RIGHT(@CsvPath, CHARINDEX('\', REVERSE(@CsvPath)) - 1);
+    DECLARE @FileName NVARCHAR(260);
 
     BEGIN TRY
-        SET @JobId = NEWID();
+        SELECT @FileName = FileName FROM dbo.IC_ImportJob WHERE JobId = @JobId;
 
-        -- 1. Create the Master Job Record
-        INSERT INTO dbo.IC_ImportJob (JobId, FileName, FilePath, JobStatus)
-        VALUES (@JobId, @FileName, @CsvPath, 'LOADING');
-
-        SET @LogMsg = 'Master pipeline initialized for file: ' + @FileName;
-        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage)
-        VALUES (@JobId, 'INFO', @StepName, @LogMsg);
-
-        -- 2. Execute Staging Load
-        SET @StepName = 'EXEC_LOAD_STAGING';
-        SET @LogMsg = 'Handing off to dbo.usp_IC_LoadStaging.';
+        SET @LogMsg = 'Starting validation rules for JobId: ' + CAST(@JobId AS VARCHAR(36));
         INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
-        
-        EXEC dbo.usp_IC_LoadStaging @JobId = @JobId, @CsvPath = @CsvPath;
 
-        IF EXISTS (SELECT 1 FROM dbo.IC_ImportJob WHERE JobId = @JobId AND JobStatus = 'FAILED')
+        -- ==============================================================================
+        -- PHASE 1: JOB-LEVEL FATAL CHECKS
+        -- ==============================================================================
+        SET @StepName = 'VAL_FILE_FLAGS';
+        
+        IF EXISTS (
+            SELECT 1 FROM dbo.IC_StagingRaw 
+            WHERE JobId = @JobId AND UPPER(LTRIM(RTRIM(ReversalFlag))) NOT IN ('Y', 'N')
+        )
+        OR 
+        (SELECT COUNT(DISTINCT UPPER(LTRIM(RTRIM(ReversalFlag)))) FROM dbo.IC_StagingRaw WHERE JobId = @JobId) > 1
         BEGIN
-            SET @LogMsg = 'Pipeline aborted. dbo.usp_IC_LoadStaging reported a FATAL failure.';
-            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'ERROR', @StepName, @LogMsg);
+            UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
+            
+            SET @LogMsg = 'Mixed or invalid ReversalFlag values. Entire job rejected.';
+            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'FATAL', @StepName, @LogMsg);
             RETURN;
         END
 
-        -- 3. Execute Validation Rules
-        SET @StepName = 'EXEC_VALIDATE_RULES';
-        SET @LogMsg = 'Staging successful. Handing off to dbo.usp_IC_ValidateRules.';
-        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
-        
-        EXEC dbo.usp_IC_ValidateRules @JobId = @JobId;
+        DECLARE @JobRevFlag CHAR(1) = (SELECT TOP 1 UPPER(LTRIM(RTRIM(ReversalFlag))) FROM dbo.IC_StagingRaw WHERE JobId = @JobId);
 
-        IF EXISTS (SELECT 1 FROM dbo.IC_ImportJob WHERE JobId = @JobId AND JobStatus = 'FAILED')
+        -- ==============================================================================
+        -- PHASE 2: PROMOTION (STAGING -> HEADER & DETAIL)
+        -- ==============================================================================
+        SET @StepName = 'PROMOTE_HEADERS';
+        
+        -- 2A. Build the Company Headers (FileSection built here)
+        INSERT INTO dbo.IC_CompanyHeader (JobId, Company, FileSection, ReversalFlag, TrxDate, HeaderStatus)
+        SELECT 
+            @JobId,
+            LTRIM(RTRIM(Company)),
+            CONCAT(@FileName, ' | Company=', LTRIM(RTRIM(Company))),
+            @JobRevFlag,
+            MIN(TRY_CAST(TrxDate AS DATE)), 
+            'PENDING'
+        FROM dbo.IC_StagingRaw
+        WHERE JobId = @JobId
+        GROUP BY LTRIM(RTRIM(Company));
+
+        IF @JobRevFlag = 'Y'
         BEGIN
-            SET @LogMsg = 'Pipeline aborted. dbo.usp_IC_ValidateRules reported a FATAL file-level failure.';
-            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'ERROR', @StepName, @LogMsg);
-            RETURN;
+            UPDATE dbo.IC_CompanyHeader
+            SET ReversalDate = DATEADD(DAY, 1, EOMONTH(TrxDate))
+            WHERE JobId = @JobId;
         END
 
-        -- 4. Execute eConnect Posting
-        SET @StepName = 'EXEC_POST_ECONNECT';
-        SET @LogMsg = 'Validation complete. Handing off VALIDATED batches to dbo.usp_IC_PostEconnect.';
-        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
-        
-        EXEC dbo.usp_IC_PostEconnect @JobId = @JobId;
+        -- 2B. Build the Detail Lines
+        SET @StepName = 'PROMOTE_LINES';
+        INSERT INTO dbo.IC_DetailLine (HeaderId, JobId, Account, AcctDesc, TrxDate, Reference, DebitAmount, CreditAmount)
+        SELECT 
+            h.HeaderId,
+            @JobId,
+            CONVERT(CHAR(129), LTRIM(RTRIM(s.Account))), 
+            s.AcctDesc,
+            TRY_CAST(s.TrxDate AS DATE),
+            s.Reference,
+            CASE WHEN TRY_CAST(REPLACE(s.Amount, ',', '') AS NUMERIC(19,5)) > 0 THEN TRY_CAST(REPLACE(s.Amount, ',', '') AS NUMERIC(19,5)) ELSE 0 END,
+            CASE WHEN TRY_CAST(REPLACE(s.Amount, ',', '') AS NUMERIC(19,5)) < 0 THEN ABS(TRY_CAST(REPLACE(s.Amount, ',', '') AS NUMERIC(19,5))) ELSE 0 END
+        FROM dbo.IC_StagingRaw s
+        INNER JOIN dbo.IC_CompanyHeader h ON LTRIM(RTRIM(s.Company)) = h.Company AND h.JobId = @JobId
+        WHERE s.JobId = @JobId;
 
-        SET @StepName = 'PIPELINE_COMPLETE';
-        SET @LogMsg = 'Master pipeline execution finished for JobId: ' + CAST(@JobId AS VARCHAR(36));
-        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
+        -- 2C. Update Header Aggregates for Reporting
+        SET @StepName = 'UPDATE_AGGREGATES';
+        UPDATE h
+        SET LineCount = (SELECT COUNT(*) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId),
+            TotalAmount = (SELECT SUM(DebitAmount) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId)
+        FROM dbo.IC_CompanyHeader h
+        WHERE h.JobId = @JobId;
+
+        -- ==============================================================================
+        -- PHASE 3: THE DUPLICATE GUARD (CONTENT HASHING)
+        -- ==============================================================================
+        SET @StepName = 'HASH_PAYLOAD';
+        
+        UPDATE h
+        SET ContentHash = HASHBYTES('SHA2_256', 
+            (
+                SELECT Account, TrxDate, DebitAmount, CreditAmount, Reference
+                FROM dbo.IC_DetailLine l
+                WHERE l.HeaderId = h.HeaderId
+                ORDER BY Account, TrxDate, DebitAmount, CreditAmount
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            )
+        )
+        FROM dbo.IC_CompanyHeader h
+        WHERE h.JobId = @JobId;
+
+        UPDATE current_h
+        SET HeaderStatus = 'SKIPPED'
+        FROM dbo.IC_CompanyHeader current_h
+        INNER JOIN dbo.IC_CompanyHeader past_h 
+            ON current_h.ContentHash = past_h.ContentHash
+            AND past_h.HeaderStatus = 'POSTED'
+            AND current_h.Company = past_h.Company
+        WHERE current_h.JobId = @JobId;
+
+        IF EXISTS (SELECT 1 FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'SKIPPED')
+        BEGIN
+            SET @LogMsg = 'One or more company payloads match a previously POSTED batch. Marked SKIPPED.';
+            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'WARN', @StepName, @LogMsg);
+        END
+
+        -- ==============================================================================
+        -- PHASE 4: MATH & BUSINESS RULES
+        -- ==============================================================================
+        SET @StepName = 'VAL_MATH_RULES';
+        
+        -- Rule 1: Exactly one TrxDate per company
+        UPDATE h
+        SET HeaderStatus = 'FAILED'
+        FROM dbo.IC_CompanyHeader h
+        WHERE h.JobId = @JobId AND h.HeaderStatus = 'PENDING'
+        AND (SELECT COUNT(DISTINCT TrxDate) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId) <> 1;
+
+        SET @LogMsg = 'Company batch contains multiple Transaction Dates.';
+        INSERT INTO dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
+        SELECT @JobId, HeaderId, 'ERROR', @StepName, @LogMsg
+        FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'FAILED' 
+        AND HeaderId NOT IN (SELECT HeaderId FROM dbo.IC_SystemLog WHERE JobId = @JobId);
+
+        -- Rule 2: Debits must equal Credits
+        UPDATE h
+        SET HeaderStatus = 'FAILED'
+        FROM dbo.IC_CompanyHeader h
+        WHERE h.JobId = @JobId AND h.HeaderStatus = 'PENDING'
+        AND (SELECT SUM(DebitAmount) - SUM(CreditAmount) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId) <> 0;
+
+        SET @LogMsg = 'Company batch does not balance (Debits <> Credits).';
+        INSERT INTO dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
+        SELECT @JobId, HeaderId, 'ERROR', @StepName, @LogMsg
+        FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'FAILED'
+        AND HeaderId NOT IN (SELECT HeaderId FROM dbo.IC_SystemLog WHERE JobId = @JobId);
+
+        -- ==============================================================================
+        -- PHASE 5: DYNAMICS GP CROSS-DATABASE CHECKS
+        -- ==============================================================================
+        SET @StepName = 'VAL_GP_CROSSCHECK';
+        
+        DECLARE @DynamicCo VARCHAR(20);
+        DECLARE @DynSql NVARCHAR(MAX);
+
+        DECLARE CoCursor CURSOR LOCAL FAST_FORWARD FOR 
+            SELECT DISTINCT Company FROM dbo.IC_CompanyHeader 
+            WHERE JobId = @JobId AND HeaderStatus = 'PENDING';
+
+        OPEN CoCursor;
+        FETCH NEXT FROM CoCursor INTO @DynamicCo;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            SET @DynSql = N'
+            USE ' + QUOTENAME(@DynamicCo) + N';
+
+            -- Check 1: TrxDate Period
+            UPDATE h
+            SET h.HeaderStatus = ''FAILED''
+            FROM DYNAMICS.dbo.IC_CompanyHeader h
+            WHERE h.JobId = @pJobId AND h.Company = @pCompany AND h.HeaderStatus = ''PENDING''
+            AND NOT EXISTS (
+                SELECT 1 FROM dbo.SY40100 p 
+                WHERE p.SERIES = 2 AND p.CLOSED = 0 
+                AND h.TrxDate BETWEEN p.PERIODDT AND p.PERDENDT
+            );
+
+            INSERT INTO DYNAMICS.dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
+            SELECT @pJobId, HeaderId, ''ERROR'', ''VAL_PERIOD'', ''Transaction Date period is closed or does not exist.''
+            FROM DYNAMICS.dbo.IC_CompanyHeader 
+            WHERE JobId = @pJobId AND Company = @pCompany AND HeaderStatus = ''FAILED''
+            AND HeaderId NOT IN (SELECT HeaderId FROM DYNAMICS.dbo.IC_SystemLog WHERE JobId = @pJobId);
+
+            -- Check 2: ReversalDate Period
+            UPDATE h
+            SET h.HeaderStatus = ''FAILED''
+            FROM DYNAMICS.dbo.IC_CompanyHeader h
+            WHERE h.JobId = @pJobId AND h.Company = @pCompany AND h.HeaderStatus = ''PENDING''
+            AND h.ReversalFlag = ''Y''
+            AND NOT EXISTS (
+                SELECT 1 FROM dbo.SY40100 p 
+                WHERE p.SERIES = 2 AND p.CLOSED = 0 
+                AND h.ReversalDate BETWEEN p.PERIODDT AND p.PERDENDT
+            );
+
+            INSERT INTO DYNAMICS.dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
+            SELECT @pJobId, HeaderId, ''ERROR'', ''VAL_REV_PERIOD'', ''Reversal Date period is closed or does not exist.''
+            FROM DYNAMICS.dbo.IC_CompanyHeader 
+            WHERE JobId = @pJobId AND Company = @pCompany AND HeaderStatus = ''FAILED''
+            AND HeaderId NOT IN (SELECT HeaderId FROM DYNAMICS.dbo.IC_SystemLog WHERE JobId = @pJobId);
+
+            -- Check 3: Account Exists & Active
+            UPDATE h
+            SET h.HeaderStatus = ''FAILED''
+            FROM DYNAMICS.dbo.IC_CompanyHeader h
+            WHERE h.JobId = @pJobId AND h.Company = @pCompany AND h.HeaderStatus = ''PENDING''
+            AND EXISTS (
+                SELECT 1 FROM DYNAMICS.dbo.IC_DetailLine l
+                LEFT JOIN dbo.GL00105 a ON l.Account = a.ACTNUMST
+                LEFT JOIN dbo.GL00100 m ON a.ACTINDX = m.ACTINDX
+                WHERE l.HeaderId = h.HeaderId
+                AND (a.ACTNUMST IS NULL OR m.ACTIVE = 0)
+            );
+
+            INSERT INTO DYNAMICS.dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
+            SELECT @pJobId, HeaderId, ''ERROR'', ''VAL_ACCOUNT'', ''One or more accounts do not exist or are inactive in GP.''
+            FROM DYNAMICS.dbo.IC_CompanyHeader 
+            WHERE JobId = @pJobId AND Company = @pCompany AND HeaderStatus = ''FAILED''
+            AND HeaderId NOT IN (SELECT HeaderId FROM DYNAMICS.dbo.IC_SystemLog WHERE JobId = @pJobId);
+            ';
+
+            EXEC sp_executesql @DynSql, 
+                N'@pJobId UNIQUEIDENTIFIER, @pCompany VARCHAR(20)', 
+                @pJobId = @JobId, @pCompany = @DynamicCo;
+
+            FETCH NEXT FROM CoCursor INTO @DynamicCo;
+        END
+
+        CLOSE CoCursor;
+        DEALLOCATE CoCursor;
+
+        -- ==============================================================================
+        -- PHASE 6: FINALIZE
+        -- ==============================================================================
+        SET @StepName = 'VAL_FINALIZE';
+        
+        -- Promote survivors
+        UPDATE dbo.IC_CompanyHeader
+        SET HeaderStatus = 'VALIDATED'
+        WHERE JobId = @JobId AND HeaderStatus = 'PENDING';
+
+        -- Generate BatchIds
+        UPDATE dbo.IC_CompanyHeader
+        SET BatchId = 'GLTX' + RIGHT(REPLICATE('0', 8) + CAST(NEXT VALUE FOR dbo.IC_BatchSeq AS VARCHAR(32)), 8)
+        WHERE JobId = @JobId AND HeaderStatus = 'VALIDATED';
+
+        -- Final Job Status
+        IF EXISTS (SELECT 1 FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'VALIDATED')
+        BEGIN
+            UPDATE dbo.IC_ImportJob SET JobStatus = 'VALIDATED' WHERE JobId = @JobId;
+            SET @LogMsg = 'Validation complete. Found VALIDATED batches ready for GP.';
+            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
+        END
+        ELSE
+        BEGIN
+            UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
+            SET @LogMsg = 'Validation complete. Zero batches survived the validation gauntlet.';
+            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'WARN', @StepName, @LogMsg);
+        END
 
     END TRY
     BEGIN CATCH
@@ -67,9 +270,14 @@ BEGIN
         
         UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
 
-        SET @LogMsg = 'Unhandled Pipeline Exception: ' + @ErrMessage;
+        SET @LogMsg = 'Validation Exception: ' + @ErrMessage;
         INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage)
         VALUES (@JobId, 'FATAL', @StepName, @LogMsg);
+        
+        IF CURSOR_STATUS('local', 'CoCursor') >= -1
+        BEGIN
+            CLOSE CoCursor; DEALLOCATE CoCursor;
+        END
     END CATCH
 END
 GO
