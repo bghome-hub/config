@@ -1,45 +1,31 @@
+-- Clean start
+DROP TABLE IF EXISTS dbo.IC_Line;
+DROP TABLE IF EXISTS dbo.IC_Run;
+DROP TABLE IF EXISTS dbo.IC_Log;
+DROP TABLE IF EXISTS dbo.IC_FileStage;
+DROP TABLE IF EXISTS dbo.IC_File;
+
 CREATE TABLE dbo.IC_File (
     FileID UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT (NEWID()),
     FileName NVARCHAR(260) NOT NULL,
-    FileHash VARCHAR(64),
-    TotalRuns INT NOT NULL DEFAULT 0,
     Status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
     ErrorMessage VARCHAR(4000) NULL,
     CreateDateTime DATETIME NOT NULL DEFAULT GETDATE()
 );
-CREATE TABLE [dbo].[IC_FileStage] (
-    [Company]   NVARCHAR (MAX)  NULL,
-    [Account]   NVARCHAR (MAX) NULL,
-    [AcctDesc]  NVARCHAR (MAX) NULL,
-    [Amount]    NVARCHAR (MAX)  NULL,
-    [TrxDate]   NVARCHAR (MAX)  NULL,
-    [Reference] NVARCHAR (MAX)  NULL,
-    [Reversal_Flag] NVARCHAR(MAX) NULL
-);
-GO
 
-CREATE TABLE dbo.IC_Line (
-    LineID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-    RunID UNIQUEIDENTIFIER NOT NULL,
-    Company VARCHAR(10) NOT NULL,
-    Account VARCHAR(75) NOT NULL, 
-    Amount NUMERIC(19,5) NOT NULL, 
-    TrxDate DATE NOT NULL, 
-    Reference VARCHAR(31) NULL,
-    Reversal CHAR(1) NOT NULL, -- Matches 'Y'/'N' logic
-    CONSTRAINT FK_ICLine_Run FOREIGN KEY (RunID) REFERENCES dbo.IC_Run(RunID) ON DELETE CASCADE
+CREATE TABLE dbo.IC_FileStage (
+    Company NVARCHAR (MAX) NULL,
+    Account NVARCHAR (MAX) NULL,
+    AcctDesc NVARCHAR (MAX) NULL,
+    Amount NVARCHAR (MAX) NULL,
+    TrxDate NVARCHAR (MAX) NULL,
+    Reference NVARCHAR (MAX) NULL,
+    Reversal_Flag NVARCHAR(MAX) NULL
 );
-CREATE Table dbo.IC_Log(
-  LogID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-  TargetID  UNIQUEIDENTIFIER not null,
-  LogLevel VARCHAR(10) not null default 'INFO',
-  StepName Varchar(50) not null,
-  LogMessage VARCHAR(MAX) null,
-  LogDateTime datetime NOT NULL DEFAULT (GETDATE())
-)
+
 CREATE TABLE dbo.IC_Run (
     RunID UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT (NEWID()),
-    FileID UNIQUEIDENTIFIER NOT NULL,
+    FileID UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.IC_File(FileID),
     Company VARCHAR(10) NOT NULL,
     BatchID CHAR(15) NULL,
     LineCount INT NOT NULL DEFAULT 0,
@@ -47,90 +33,170 @@ CREATE TABLE dbo.IC_Run (
     CreditTotal NUMERIC(19,5) NOT NULL DEFAULT 0,
     Status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
     ErrorMessage VARCHAR(MAX) NULL,
-    CreatedDatetime DATETIME NOT NULL DEFAULT GETDATE(),
-    CONSTRAINT FK_ICRun_File FOREIGN KEY (FileID) REFERENCES dbo.IC_File(FileID) 
+    CreatedDatetime DATETIME NOT NULL DEFAULT GETDATE()
 );
 
+CREATE TABLE dbo.IC_Line (
+    LineID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    RunID UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.IC_Run(RunID) ON DELETE CASCADE,
+    Company VARCHAR(10) NOT NULL,
+    Account VARCHAR(75) NOT NULL, 
+    Amount NUMERIC(19,5) NOT NULL, 
+    TrxDate DATE NOT NULL, 
+    Reference VARCHAR(31) NULL,
+    Reversal CHAR(1) NOT NULL
+);
 
+CREATE TABLE dbo.IC_Log (
+    LogID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    TargetID UNIQUEIDENTIFIER NOT NULL,
+    LogLevel VARCHAR(20) NOT NULL DEFAULT 'INFO',
+    StepName VARCHAR(50) NOT NULL,
+    LogMessage VARCHAR(MAX) NULL,
+    LogDateTime DATETIME NOT NULL DEFAULT (GETDATE())
+);
 
+IF NOT EXISTS (SELECT * FROM sys.sequences WHERE name = 'ic_batch_seq')
+    CREATE SEQUENCE [DYNAMICS].[dbo].[ic_batch_seq] AS BIGINT START WITH 1000 INCREMENT BY 1;
 
-CREATE   PROCEDURE dbo.usp_IC_GetNextBatchID_Seq
-(
-    @SeriesPrefix varchar(8) = 'GLTX',  -- adjust prefix if needed
-    @PadWidth     int        = 8,       -- ICTX + 8 digits -> 12 chars total
-    @BatchID      CHAR(15)   OUTPUT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    DECLARE @n bigint = NEXT VALUE FOR DYNAMICS.dbo.ic_batch_seq;
-    DECLARE @suffix varchar(32) = RIGHT(REPLICATE('0', @PadWidth) + CAST(@n AS varchar(32)), @PadWidth);
-    DECLARE @candidate varchar(15) = @SeriesPrefix + @suffix;
-
-    IF LEN(@candidate) > 15
-		THROW 52041, 'Generated batch ID exceeds 15 characters.', 1;
-
-    SET @BatchID = @candidate;
-END
-GO
 
 CREATE PROCEDURE dbo.usp_IC_Log
-    @TargetID   UNIQUEIDENTIFIER,
-    @Step       NVARCHAR(50),
-    @LogLevel   NVARCHAR(20), -- 'INFO', 'WARNING', 'ERROR'
+    @TargetID UNIQUEIDENTIFIER,
+    @Step NVARCHAR(50),
+    @LogLevel NVARCHAR(20),
     @LogMessage NVARCHAR(MAX)
 AS
 BEGIN
     SET NOCOUNT ON;
-
-    -- We use a simple insert. 
-    -- If the Log table doesn't exist yet, we should create it first.
-    INSERT INTO dbo.IC_Log (
-        TargetID, 
-        Step, 
-        LogLevel, 
-        LogMessage, 
-        LogDateTime
-    )
-    VALUES (
-        @TargetID, 
-        @Step, 
-        UPPER(@LogLevel), 
-        @LogMessage, 
-        GETDATE()
-    );
+    INSERT INTO dbo.IC_Log (TargetID, StepName, LogLevel, LogMessage)
+    VALUES (@TargetID, @Step, UPPER(@LogLevel), @LogMessage);
 END
+GO
+
+CREATE PROCEDURE dbo.usp_IC_GetNextBatchID_Seq
+    @SeriesPrefix VARCHAR(8) = 'GLTX',
+    @PadWidth INT = 8,
+    @BatchID CHAR(15) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @n BIGINT = NEXT VALUE FOR DYNAMICS.dbo.ic_batch_seq;
+    DECLARE @suffix VARCHAR(32) = RIGHT(REPLICATE('0', @PadWidth) + CAST(@n AS VARCHAR(32)), @PadWidth);
+    SET @BatchID = LEFT(@SeriesPrefix + @suffix, 15);
+END
+GO
+
+
+CREATE PROCEDURE dbo.usp_IC_ValidateFile
+    @CsvPath NVARCHAR(4000),
+    @FileID UNIQUEIDENTIFIER
+AS  
+BEGIN 
+    SET NOCOUNT ON;
+    DECLARE @ErrorMsg VARCHAR(4000), @Step NVARCHAR(50) = 'VALIDATE_FILE', @sql NVARCHAR(MAX);
+    DECLARE @ExpectedHeader NVARCHAR(MAX) = 'Company,Account,AcctDesc,Amount,Date,Reference,Reversal';
+    DECLARE @ActualHeader NVARCHAR(MAX);
+
+    DROP TABLE IF EXISTS #HeaderCheck;
+    CREATE TABLE #HeaderCheck (RawRow VARCHAR(MAX));
+
+    SET @sql = N'BULK INSERT #HeaderCheck FROM ' + QUOTENAME(@CsvPath,'''') + N' WITH (FIRSTROW = 1, LASTROW = 1, ROWTERMINATOR = ''0x0d0a'');';
+    EXEC(@sql);
+
+    SELECT TOP 1 @ActualHeader = LTRIM(RTRIM(RawRow)) FROM #HeaderCheck;
+    IF @ActualHeader <> @ExpectedHeader
+    BEGIN
+        SET @ErrorMsg = CONCAT('Header Mismatch. Found: ', ISNULL(@ActualHeader,'NoHeader'));
+        THROW 54001, @ErrorMsg, 1;
+    END
+
+    TRUNCATE TABLE dbo.IC_FileStage;
+    SET @sql = N'BULK INSERT dbo.IC_FileStage FROM ' + QUOTENAME(@CsvPath,'''') + N' WITH (FIRSTROW = 2, FIELDTERMINATOR = '','', ROWTERMINATOR = ''0x0d0a'', FIELDQUOTE=''"'');';
+    EXEC(@sql);
+
+    IF EXISTS(SELECT 1 FROM dbo.IC_FileStage WHERE TRY_CONVERT(NUMERIC(19,5), Amount) IS NULL)
+        THROW 54002, 'File Rejected: Amount column contains invalid characters.', 1;
+
+    IF EXISTS(SELECT 1 FROM dbo.IC_FileStage WHERE UPPER(LTRIM(RTRIM(Reversal_Flag))) NOT IN ('Y','N'))
+        THROW 54003, 'File Rejected: Reversal Flag must be Y or N.', 1;
+END
+GO
+
+CREATE PROCEDURE dbo.usp_IC_Process_Staging
+    @FileID UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Co VARCHAR(10), @RunID UNIQUEIDENTIFIER, @BatchID CHAR(15);
+
+    DECLARE CoCursor CURSOR FOR SELECT DISTINCT Company FROM dbo.IC_FileStage;
+    OPEN CoCursor; FETCH NEXT FROM CoCursor INTO @Co;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @RunID = NEWID();
+        EXEC dbo.usp_IC_GetNextBatchID_Seq @BatchID = @BatchID OUTPUT;
+
+        INSERT INTO dbo.IC_Run (RunID, FileID, Company, BatchID, Status)
+        VALUES (@RunID, @FileID, @Co, @BatchID, 'PENDING');
+
+        INSERT INTO dbo.IC_Line (RunID, Company, Account, Amount, TrxDate, Reference, Reversal)
+        SELECT @RunID, Company, Account, CAST(Amount AS NUMERIC(19,5)), CAST(TrxDate AS DATE), Reference, LEFT(Reversal_Flag, 1)
+        FROM dbo.IC_FileStage WHERE Company = @Co;
+
+        UPDATE R SET LineCount = L.Cnt, DebitTotal = L.Dr, CreditTotal = L.Cr
+        FROM dbo.IC_Run R CROSS APPLY (
+            SELECT COUNT(*) AS Cnt, SUM(CASE WHEN Amount > 0 THEN Amount ELSE 0 END) AS Dr, ABS(SUM(CASE WHEN Amount < 0 THEN Amount ELSE 0 END)) AS Cr
+            FROM dbo.IC_Line WHERE RunID = @RunID
+        ) L WHERE R.RunID = @RunID;
+
+        FETCH NEXT FROM CoCursor INTO @Co;
+    END
+    CLOSE CoCursor; DEALLOCATE CoCursor;
+END
+GO
+
+CREATE PROCEDURE dbo.usp_IC_ValidateRun
+    @RunID UNIQUEIDENTIFIER
+AS 
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @ErrorMsg VARCHAR(4000), @Step VARCHAR(50) = 'VALIDATE_DATA';
+    DECLARE @Company VARCHAR(10), @TrxDate DATE, @RevFlag CHAR(1), @IsOpen BIT = 0, @sql NVARCHAR(MAX);
+
+    SELECT @Company = Company, @TrxDate = TrxDate, @RevFlag = Reversal FROM dbo.IC_Line WHERE RunID = @RunID;
+
+    DECLARE @net NUMERIC(19,5) = (SELECT SUM(Amount) FROM dbo.IC_Line WHERE RunID = @RunID);
+    IF ABS(@net) > 0.00001
+        THROW 54012, 'Accounting Error: Transaction is out of balance.', 1;
+
+    SET @sql = N'SELECT @o_Open = 1 FROM ' + QUOTENAME(@Company) + N'.dbo.SY40100 WHERE @p_TrxDate BETWEEN PERIODDT AND PERDENDT AND CLOSED = 0 AND SERIES = 2 AND PERIODID <> 0';
+    EXEC sp_executesql @sql, N'@p_TrxDate DATE, @o_Open BIT OUTPUT', @p_TrxDate = @TrxDate, @o_Open = @IsOpen OUTPUT;
+
+    IF ISNULL(@IsOpen, 0) = 0
+        THROW 54014, 'Accounting Error: Financial Period is closed.', 1;
+END
+GO
+
+
+
 CREATE PROCEDURE dbo.usp_IC_Process_File
     @CsvPath NVARCHAR(4000)
 AS
 BEGIN
     SET NOCOUNT ON;
-    
-    DECLARE @FileID UNIQUEIDENTIFIER = NEWID(); -- We create it here.
-    DECLARE @FileName NVARCHAR(260) = REVERSE(LEFT(REVERSE(@CsvPath), CHARINDEX('\', REVERSE(@CsvPath)) - 1));
-    DECLARE @Step NVARCHAR(50) = 'FILE_PROCESS';
-    DECLARE @ErrorMsg VARCAHR(MAX);
+    DECLARE @FileID UNIQUEIDENTIFIER = NEWID(), @Step NVARCHAR(50) = 'FILE_PROCESS', @ErrorMsg NVARCHAR(MAX);
+    DECLARE @FileName NVARCHAR(260) = REVERSE(LEFT(REVERSE(@CsvPath), CHARINDEX('\', REVERSE(@CsvPath) + '\') - 1));
 
-    -- 1. Create the master record immediately
-    INSERT INTO dbo.IC_File (FileID, FileName, Status)
-    VALUES (@FileID, @FileName, 'PROCESSING');
+    INSERT INTO dbo.IC_File (FileID, FileName, Status) VALUES (@FileID, @FileName, 'PROCESSING');
 
     BEGIN TRY
-        -- STEP 1: GATEKEEPER (CSV -> Staging)
-        -- Uses the @FileID we just generated
         EXEC dbo.usp_IC_ValidateFile @CsvPath = @CsvPath, @FileID = @FileID;
-
-        -- STEP 2: DIVIDER (Staging -> Runs/Lines)
         EXEC dbo.usp_IC_Process_Staging @FileID = @FileID;
 
-        -- STEP 3: ACCOUNTANT (Validate the individual Company Runs)
         DECLARE @RunID UNIQUEIDENTIFIER;
-        DECLARE RunCursor CURSOR FOR 
-            SELECT RunID FROM dbo.IC_Run WHERE FileID = @FileID;
-
-        OPEN RunCursor;
-        FETCH NEXT FROM RunCursor INTO @RunID;
+        DECLARE RunCursor CURSOR FOR SELECT RunID FROM dbo.IC_Run WHERE FileID = @FileID;
+        OPEN RunCursor; FETCH NEXT FROM RunCursor INTO @RunID;
 
         WHILE @@FETCH_STATUS = 0
         BEGIN
@@ -139,189 +205,24 @@ BEGIN
                 UPDATE dbo.IC_Run SET Status = 'VALIDATED' WHERE RunID = @RunID;
             END TRY
             BEGIN CATCH
-                UPDATE dbo.IC_Run SET Status = 'FAILED', ErrorMessage = ERROR_MESSAGE() WHERE RunID = @RunID;
-                SET @ErrMsg = ERROR_MESSAGE();
-                EXEC dbo.usp_IC_Log @RunID, 'VALIDATE_RUN', 'ERROR', @ErrMsg
+                SET @ErrorMsg = ERROR_MESSAGE();
+                UPDATE dbo.IC_Run SET Status = 'FAILED', ErrorMessage = @ErrorMsg WHERE RunID = @RunID;
+                EXEC dbo.usp_IC_Log @RunID, 'VALIDATE_RUN', 'ERROR', @ErrorMsg;
             END CATCH
-
             FETCH NEXT FROM RunCursor INTO @RunID;
         END
         CLOSE RunCursor; DEALLOCATE RunCursor;
 
-        -- Finalize
         UPDATE dbo.IC_File SET Status = 'COMPLETED' WHERE FileID = @FileID;
-        SET @ErrorMsg = 'Process completed for ' + @FileName;
-        EXEC dbo.usp_IC_Log @FileID, @Step, 'INFO', @ErrorMsg
-
+        SET @ErrorMsg = CONCAT('Process completed for ', @FileName);
+        EXEC dbo.usp_IC_Log @FileID, @Step, 'INFO', @ErrorMsg;
     END TRY
     BEGIN CATCH
-        SET @ErrMsg = ERROR_MESSAGE();
-        UPDATE dbo.IC_File SET Status = 'ERROR', ErrorMessage = @ErrMsg WHERE FileID = @FileID;
-        EXEC dbo.usp_IC_Log @FileID, @Step, 'ERROR', @ErrMsg;
+        SET @ErrorMsg = ERROR_MESSAGE();
+        UPDATE dbo.IC_File SET Status = 'ERROR', ErrorMessage = @ErrorMsg WHERE FileID = @FileID;
+        EXEC dbo.usp_IC_Log @FileID, @Step, 'ERROR', @ErrorMsg;
     END CATCH
 
-    -- Return the ID to the caller in case they need it for the report
     SELECT @FileID AS GeneratedFileID;
 END
-create PROCEDURE dbo.usp_IC_ValidateFile(
-  @CsvPath NVARCHAR(4000),
-  @FileID UNIQUEIDENTIFIER
-
-)
-AS  
-BEGIN 
-  
-  SET NOCOUNT ON;
-  DECLARE @ErrorMsg varchar(4000);
-  DECLARE @Step nvarchar(50) = 'VALIDATE_FILE'
-
-  /* Define expected headers */
-  DECLARE @ExpectedHeader NVARCHAR(MAX) =	'Company,Account,AcctDesc,Amount,Date,Reference,Reversal';
-	DECLARE @ActualHeader NVARCHAR(MAX);
-
-	DROP TABLE IF EXISTS #HeaderCheck;
-	CREATE TABLE #HeaderCheck (RawRow VARCHAR(MAX));
-
-  /* Load first row into temp table */
-	SET @sql = N'BULK INSERT #HeaderCheck FROM ' + QUOTENAME(@CsvPath,'''') + N' WITH (FIRSTROW = 1, LASTROW = 1, ROWTERMINATOR = ''0x0d0a'');';
-	EXEC(@sql)
-
-  /* Check headers */
-	SELECT TOP 1 @ActualHeader = LTRIM(RTRIM(RawRow)) FROM #HeaderCheck;
-	IF @ActualHeader <> @ExpectedHeader
-	BEGIN
-		SET @ErrorMsg = CONCAT('Header Mismatch. Found: ', ISNULL(@ActualHeader,'NoHeader'));
-		EXEC dbo.usp_IC_Log @FileID, @Step, "ERROR", @ErrorMsg
-    ;throw 54001, @ErrorMsg, 1;
-  END
-
-  /* Headers passed, Load file into Staging */
-  TRUNCATE TABLE dbo.IC_FileStage;
-
-	SET @sql = N'BULK INSERT dbo.IC_FileStage FROM ' + QUOTENAME(@CsvPath,'''') + N' WITH (FIRSTROW = 2, FIELDTERMINATOR = '','', ROWTERMINATOR = ''0x0d0a'', FIELDQUOTE''"'');';
-	EXEC(@sql)
-
-  /*  Validate Amount Format */
-  IF EXISTS(SELECT 1 FROM dbo.IC_FileStage WHERE TRY_CONVERT(numeric(19,5), Amount) IS NULL)
-  BEGIN
-    SET @ErrorMsg = 'File Rejected: Amount column contains invalid characters.';
-    exec usp_IC_Log @FileID, @Step, "ERROR", @ErrorMsg
-    ;Throw 54002, @ErrorMsg, 1
-  END
-
-  /* Validate Reversal Values */
-  IF EXISTS(SELECT 1 from dbo.IC_FileStage WHERE UPPER(LTRIM(RTRIM(Reversal_Flag))) NOT IN ('Y','N'))
-  BEGIN 
-      SET @ErrorMsg = 'File Rejected: Reversal Flag must be Y or N.';
-    exec usp_IC_Log @FileID, @Step, "ERROR", @ErrorMsg
-    ;Throw 54003, @ErrorMsg, 1
-  END
-
-  /* Validate consistent Reversal Vales */
-  IF (SELECT COUNT(DISTINCT UPPER(LTRIM(RTRIM(Reversal_Flag)))) from dbo.IC_FileStage) <> 1 
-  BEGIN
-      SET @ErrorMsg = 'File Rejected: Reversal Flag must be the same for each line.';
-    exec usp_IC_Log @FileID, @Step, "ERROR", @ErrorMsg
-    ;Throw 54004, @ErrorMsg, 1
-  END
-
-  /* File Validation complete*/
-  EXEC dbo.usp_IC_Log @FileId, @Step, "INFO", "File Structure and data format verified."
-
-END
-CREATE PROCEDURE dbo.usp_IC_ValidateRun(
-  @RunID UNIQUEIDENTIFIER
-)
-AS 
-BEGIN
-
-  SET NOCOUNT ON;
-  DECLARE @ErrorMsg varchar(4000);
-  DECLARE @Step varchar(50) = 'VALIDATE_DATA'
-   
-  DECLARE @Company Varchar(10);
-  Declare @TrxDate DATE
-  declare @RevFlag CHAR(1) 
-  declare @IsOpen bit = 0
-
-/* Check for existence of data */
-  IF NOT EXISTS(SELECT 1 FROM dbo.IC_Line WHERE RunID = @RunID)
-  BEGIN
-		SET @ErrorMsg = 'Accounting Error: No transaction lines found for this run';
-		EXEC dbo.usp_IC_Log @FileID, @Step, "ERROR", @ErrorMsg
-    ;THROW 54010, @ErrorMsg, 1;
-  END
-
-  /* Get this Company's info */
-  select 
-    @Company = Company,
-    @TrxDate = (SELECT MIN(TrxDate) FROM dbo.IC_Line WHERE RunID = @RunID),
-    @RevFlag = Reversal_Flag
-    from dbo.IC_Line where runid = @runid
- 
-
-
-  /* Verify Company exists */
-  /* TODO */
-
-  /* Verify that the run has only one company */
-  IF (SELECT COUNT(DISTINCT Company) FROM dbo.IC_Line WHERE RunID = @RunID) <> 1
-  BEGIN
-		SET @ErrorMsg = 'Accounting Error: A single run cannot contain multiple companies';
-		EXEC dbo.usp_IC_Log @FileID, @Step, "ERROR", @ErrorMsg
-    ;THROW 54011, @ErrorMsg, 1;
-  END
-
-  /* Verify net amount = 0 */
-  DECLARE @net numeric(19,5) = (SELECT SUM(Amount) FROM dbo.IC_Line WHERE RunID = @RunID);
-  IF ABS(@Net) > 0.00001
-  BEGIN
-		SET @ErrorMsg = CONCAT('Accounting Error: Transaction is out of balance. Net Amount: ', @net);
-		EXEC dbo.usp_IC_Log @FileID, @Step, "ERROR", @ErrorMsg
-    ;THROW 54012, @ErrorMsg, 1;
-  END
-
-  /* Verify same reversal date for all lines */
-  IF EXISTS(SELECT 1 FROM dbo.IC_Run WHERE RunID = @RunID AND Reversal_Flag = 'Y')
-  BEGIN 
-    IF (SELECT COUNT(DISTINCT TrxDate) FROM dbo.IC_Line WHERE RunID = @RunID) <> 1
-    BEGIN
-      SET @ErrorMsg = 'Accounting Error: Reversal runs must have exactly one unique Transaction Date';
-      EXEC dbo.usp_IC_Log @FileID, @Step, "ERROR", @ErrorMsg
-      ;THROW 54013, @ErrorMsg, 1;
-    END
-  END
-
-  /* Verify period is open  */
-  if @RevFlag = 'N'
-  BEGIN 
-    DECLARE @sql NVARCHAR(max) = N'
-      SELECT @o_Open = 1 FROM ' + QUOTENAME(@company) + N'.dbo.SY40100 WHERE @p_TrxDate between PERIODDT and PERDENDT AND CLOSED = 0 AND SERIES = 2 and PERIODID <> 0';
-    EXEC sp_executesql @SQL, N'@p_TrxDate date, @o_Open BIT OUTPUT', @p_TrxDate = @TrxDate, @o_Open = @IsOpen OUTPUT
-
-    IF ISNULL(@IsOpen,0) = 0
-    BEGIN
-      SET @ErrorMsg = CONCAT('Accounting Error: Date ', convert(varchar(10), @TrxDate, 120), ' is not an OPEN Financial Period for ', @company);
-      exec dbo.usp_IC_Log @RunID, @Step, @ErrorMsg
-      ;THROW 54014, @ErrorMsg, 1;
-    END
-  END
-  
-  /* Verify Account Exists */
-  /* TODO */
-
-
-  EXEC dbo.usp_IC_Log @RunID, @Step, "INFO", 'Data validation completed successfully'
-
-END
-
-
-
-
-
-CREATE SEQUENCE [DYNAMICS].[dbo].[ic_batch_seq]
-    AS BIGINT
-    START WITH 1000
-    INCREMENT BY 1;
 GO
-
