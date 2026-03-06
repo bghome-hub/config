@@ -1,116 +1,75 @@
+CREATE PROCEDURE dbo.usp_IC_ProcessCsv
+(
+    @CsvPath NVARCHAR(4000),
+    @JobId UNIQUEIDENTIFIER OUTPUT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
 
--- ==============================================================================
--- 0. CLEANUP (For testing/redeployment)
--- ==============================================================================
-DROP TABLE IF EXISTS dbo.IC_SystemLog;
-DROP TABLE IF EXISTS dbo.IC_DetailLine;
-DROP TABLE IF EXISTS dbo.IC_CompanyHeader;
-DROP TABLE IF EXISTS dbo.IC_StagingRaw;
-DROP TABLE IF EXISTS dbo.IC_ImportJob;
-DROP SEQUENCE IF EXISTS dbo.IC_BatchSeq;
+    DECLARE @StepName VARCHAR(50) = 'INIT_JOB';
+    DECLARE @LogMsg VARCHAR(MAX);
+    DECLARE @FileName NVARCHAR(260) = RIGHT(@CsvPath, CHARINDEX('\', REVERSE(@CsvPath)) - 1);
+
+    BEGIN TRY
+        SET @JobId = NEWID();
+
+        -- 1. Create the Master Job Record
+        INSERT INTO dbo.IC_ImportJob (JobId, FileName, FilePath, JobStatus)
+        VALUES (@JobId, @FileName, @CsvPath, 'LOADING');
+
+        SET @LogMsg = 'Master pipeline initialized for file: ' + @FileName;
+        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage)
+        VALUES (@JobId, 'INFO', @StepName, @LogMsg);
+
+        -- 2. Execute Staging Load
+        SET @StepName = 'EXEC_LOAD_STAGING';
+        SET @LogMsg = 'Handing off to dbo.usp_IC_LoadStaging.';
+        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
+        
+        EXEC dbo.usp_IC_LoadStaging @JobId = @JobId, @CsvPath = @CsvPath;
+
+        IF EXISTS (SELECT 1 FROM dbo.IC_ImportJob WHERE JobId = @JobId AND JobStatus = 'FAILED')
+        BEGIN
+            SET @LogMsg = 'Pipeline aborted. dbo.usp_IC_LoadStaging reported a FATAL failure.';
+            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'ERROR', @StepName, @LogMsg);
+            RETURN;
+        END
+
+        -- 3. Execute Validation Rules
+        SET @StepName = 'EXEC_VALIDATE_RULES';
+        SET @LogMsg = 'Staging successful. Handing off to dbo.usp_IC_ValidateRules.';
+        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
+        
+        EXEC dbo.usp_IC_ValidateRules @JobId = @JobId;
+
+        IF EXISTS (SELECT 1 FROM dbo.IC_ImportJob WHERE JobId = @JobId AND JobStatus = 'FAILED')
+        BEGIN
+            SET @LogMsg = 'Pipeline aborted. dbo.usp_IC_ValidateRules reported a FATAL file-level failure.';
+            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'ERROR', @StepName, @LogMsg);
+            RETURN;
+        END
+
+        -- 4. Execute eConnect Posting
+        SET @StepName = 'EXEC_POST_ECONNECT';
+        SET @LogMsg = 'Validation complete. Handing off VALIDATED batches to dbo.usp_IC_PostEconnect.';
+        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
+        
+        EXEC dbo.usp_IC_PostEconnect @JobId = @JobId;
+
+        SET @StepName = 'PIPELINE_COMPLETE';
+        SET @LogMsg = 'Master pipeline execution finished for JobId: ' + CAST(@JobId AS VARCHAR(36));
+        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'INFO', @StepName, @LogMsg);
+
+    END TRY
+    BEGIN CATCH
+        DECLARE @ErrMessage VARCHAR(MAX) = ERROR_MESSAGE();
+        
+        UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
+
+        SET @LogMsg = 'Unhandled Pipeline Exception: ' + @ErrMessage;
+        INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage)
+        VALUES (@JobId, 'FATAL', @StepName, @LogMsg);
+    END CATCH
+END
 GO
-
--- ==============================================================================
--- 1. SEQUENCE: eConnect Batch Number Generation
--- ==============================================================================
-CREATE SEQUENCE dbo.IC_BatchSeq
-    START WITH 1
-    INCREMENT BY 1
-    NO CACHE;
-GO
-
--- ==============================================================================
--- 2. IC_ImportJob: Master Control Record
--- ==============================================================================
-CREATE TABLE dbo.IC_ImportJob (
-    JobId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWID(),
-    FileName NVARCHAR(260) NOT NULL,
-    FilePath NVARCHAR(4000) NOT NULL,
-    JobStatus VARCHAR(20) NOT NULL DEFAULT 'PENDING', 
-    CreateDateTime DATETIME NOT NULL DEFAULT GETDATE()
-);
-GO
-
--- ==============================================================================
--- 3. IC_StagingRaw: 100% VARCHAR(MAX) Landing Zone
--- ==============================================================================
-CREATE TABLE dbo.IC_StagingRaw (
-    StagingId INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-    JobId UNIQUEIDENTIFIER NOT NULL,
-    Company VARCHAR(MAX) NULL,
-    Account VARCHAR(MAX) NULL,
-    AcctDesc VARCHAR(MAX) NULL,
-    Amount VARCHAR(MAX) NULL,
-    TrxDate VARCHAR(MAX) NULL,
-    Reference VARCHAR(MAX) NULL,
-    ReversalFlag VARCHAR(MAX) NULL,
-    CreateDateTime DATETIME NOT NULL DEFAULT GETDATE(),
-    
-    CONSTRAINT FK_ICStagingRaw_Job FOREIGN KEY (JobId) 
-        REFERENCES dbo.IC_ImportJob(JobId) ON DELETE CASCADE
-);
-GO
-
--- ==============================================================================
--- 4. IC_CompanyHeader: The Grouping & Duplicate Guard
--- ==============================================================================
-CREATE TABLE dbo.IC_CompanyHeader (
-    HeaderId INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-    JobId UNIQUEIDENTIFIER NOT NULL,
-    Company VARCHAR(20) NOT NULL,
-    FileSection NVARCHAR(300) NOT NULL, 
-    BatchId CHAR(15) NULL,           
-    JournalEntry INT NULL,           
-    ReversalFlag CHAR(1) NOT NULL,
-    TrxDate DATE NOT NULL,      
-    ReversalDate DATE NULL,          
-    ContentHash VARBINARY(32) NULL,  
-    LineCount INT NULL,              
-    TotalAmount NUMERIC(19,5) NULL,  
-    HeaderStatus VARCHAR(20) NOT NULL DEFAULT 'PENDING', 
-    CreateDateTime DATETIME NOT NULL DEFAULT GETDATE(),
-
-    CONSTRAINT FK_ICCompanyHeader_Job FOREIGN KEY (JobId) 
-        REFERENCES dbo.IC_ImportJob(JobId) ON DELETE CASCADE
-);
-GO
-
--- ==============================================================================
--- 5. IC_DetailLine: Strongly Typed Data for eConnect
--- ==============================================================================
-CREATE TABLE dbo.IC_DetailLine (
-    LineId INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-    HeaderId INT NOT NULL,
-    JobId UNIQUEIDENTIFIER NOT NULL,
-    Account CHAR(129) NOT NULL,
-    AcctDesc VARCHAR(255) NULL,
-    TrxDate DATE NOT NULL,
-    Reference VARCHAR(30) NULL,
-    DebitAmount NUMERIC(19,5) NOT NULL DEFAULT 0,
-    CreditAmount NUMERIC(19,5) NOT NULL DEFAULT 0,
-    CreateDateTime DATETIME NOT NULL DEFAULT GETDATE(),
-
-    CONSTRAINT FK_ICDetailLine_Header FOREIGN KEY (HeaderId) 
-        REFERENCES dbo.IC_CompanyHeader(HeaderId) ON DELETE CASCADE
-);
-GO
-
--- ==============================================================================
--- 6. IC_SystemLog: Centralized DBA Logging
--- ==============================================================================
-CREATE TABLE dbo.IC_SystemLog (
-    LogId INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-    JobId UNIQUEIDENTIFIER NULL,     
-    HeaderId INT NULL,               
-    LogLevel VARCHAR(10) NOT NULL,   
-    StepName VARCHAR(50) NOT NULL,
-    LogMessage VARCHAR(MAX) NOT NULL,
-    CreateDateTime DATETIME NOT NULL DEFAULT GETDATE()
-);
-GO
-
--- Index to make querying logs for a specific job instant
-CREATE NONCLUSTERED INDEX IX_ICSystemLog_JobId ON dbo.IC_SystemLog(JobId);
-GO
-
-```
