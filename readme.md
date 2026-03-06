@@ -1,5 +1,5 @@
 -- ==============================================================================
-        -- OUTPUT: FORMATTED EXACTLY LIKE THE DYNAMICS GP UI
+        -- OUTPUT: UPLOADED (RAW) vs DYNAMICS GP (NETTED)
         -- ==============================================================================
         SELECT 
             Company,
@@ -7,15 +7,15 @@
             JournalEntry AS gp_Journal,
             Account,
             
-            -- 1. The Uploaded Side (UI-Netted)
-            CASE WHEN (IntDebit - IntCredit) > 0 THEN (IntDebit - IntCredit) ELSE 0 END AS Uploaded_Debit,
-            CASE WHEN (IntCredit - IntDebit) > 0 THEN (IntCredit - IntDebit) ELSE 0 END AS Uploaded_Credit,
+            -- 1. The Uploaded Side (Raw, exactly as it was in the CSV/Staging)
+            IntDebit AS Uploaded_Debit,
+            IntCredit AS Uploaded_Credit,
             
-            -- 2. The GP Actual Side (UI-Netted)
+            -- 2. The GP Actual Side (Netted, exactly as it appears in the GP UI)
             CASE WHEN (GpDebit - GpCredit) > 0 THEN (GpDebit - GpCredit) ELSE 0 END AS gp_DebitAmount,
             CASE WHEN (GpCredit - GpDebit) > 0 THEN (GpCredit - GpDebit) ELSE 0 END AS gp_CreditAmount,
             
-            -- 3. The True Variance
+            -- 3. The True Variance (Proves the raw upload mathematically matches the netted GP state)
             ((IntDebit - IntCredit) - (GpDebit - GpCredit)) AS Net_Variance,
             
             GpState AS gp_Status
