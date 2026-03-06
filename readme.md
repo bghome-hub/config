@@ -1,81 +1,10 @@
-
-        INSERT INTO #JobReport (
-            JobID, runid, [FILENAME], CompanyA, BatchID, JournalEntry, TrxDate, [Reference], [STATUS], [MESSAGE], 
-            ReversalFlag, TrxDateBasis, ReversalDate, Account, AcctDesc, Amount, DebitAmt, CreditAmt, NetAmt,
-            gp_Journal, gp_BatchNumber, gp_Reference, gp_TrxDate, gp_ReversalFlag, 
-            gp_PeriodID, gp_PeriodMonth, gp_OpenYear, 
-            gp_ReversalPeriodID, gp_ReversalPeriodMonth, gp_ReversalYear,
-            gp_AccountIndex, gp_Account, gp_Description, gp_Company, 
-            gp_DebitAmount, gp_CreditAmount, gp_OriginatingDebitAmount, gp_OriginatingCreditAmount
-        )
-        SELECT 
-            r.JobID, 
-            r.RunID, 
-            r.[FileName], 
-            r.CompanyA, 
-            r.BatchID, 
-            r.JournalEntry, 
-            il.TrxDate, 
-            r.[Reference], 
-            r.[Status], 
-            r.[Message],
-            r.ReversalFlag, 
-            r.TrxDateBasis, 
-            r.ReversalDate, 
-            il.Account, 
-            il.AcctDesc, 
-            il.Amount, 
-            il.DebitAmt, 
-            il.CreditAmt, 
-            (il.DebitAmt - il.CreditAmt) AS NetAmt,
-            glh.JRNENTRY, 
-            glh.BACHNUMB, 
-            glh.REFRENCE, 
-            glh.TRXDATE, 
-            CASE WHEN glh.TRXTYPE = 0 THEN ''N'' WHEN glh.TRXTYPE = 1 THEN ''Y'' ELSE NULL END,
-            glh.PERIODID, 
-            fp.PeriodMonth, 
-            glh.OPENYEAR,
-            glh.REVPRDID, 
-            fp2.PeriodMonth, 
-            glh.REVYEAR,
-            gld.ACTINDX, 
-            act.ACTNUMST, 
-            gld.DSCRIPTN, 
-            gld.INTERID,
-            gld.DEBITAMT, 
-            gld.CRDTAMNT, 
-            gld.ORDBTAMT, 
-            gld.ORCRDAMT
-        FROM DYNAMICS.dbo.IA_Run r
-        INNER JOIN (
-            SELECT 
-                RunID, 
-                Account, 
-				TrxDate,
-                MAX(AcctDesc) AS AcctDesc, 
-                SUM(Amount) AS Amount, 
-                SUM(Debit) AS DebitAmt, 
-                SUM(Credit) AS CreditAmt
-            FROM DYNAMICS.dbo.IA_Line
-            WHERE RunID = @runid
-            GROUP BY RunID, Account, TrxDate
-        ) il ON r.RunID = il.RunID
-        LEFT JOIN ' + QUOTENAME(@currentCompany) + N'.dbo.GL10000 glh ON glh.BACHNUMB = r.BatchID
-        LEFT JOIN ' + QUOTENAME(@currentCompany) + N'.dbo.GL00105 act ON il.Account = act.ACTNUMST
-        LEFT JOIN (
-            SELECT 
-                JRNENTRY, 
-                ACTINDX, 
-				DSCRIPTN,
-                MAX(INTERID) AS INTERID,
-                SUM(DEBITAMT) AS DEBITAMT, 
-                SUM(CRDTAMNT) AS CRDTAMNT, 
-                SUM(ORDBTAMT) AS ORDBTAMT, 
-                SUM(ORCRDAMT) AS ORCRDAMT
-            FROM ' + QUOTENAME(@currentCompany) + N'.dbo.GL10001
-            GROUP BY JRNENTRY, ACTINDX, DSCRIPTN
-        ) gld ON glh.JRNENTRY = gld.JRNENTRY AND act.ACTINDX = gld.ACTINDX
-        LEFT JOIN DYNAMICS.dbo.ia_fiscal_period fp ON glh.PERIODID = fp.PeriodID
-        LEFT JOIN DYNAMICS.dbo.ia_fiscal_period fp2 ON glh.REVPRDID = fp2.PeriodID
-        WHERE r.RunID = @runid;';
+OPENYEAR,JRNENTRY,RCTRXSEQ,SOURCDOC,REFRENCE,DSCRIPTN,TRXDATE,TRXSORCE,ACTINDX,POLLDTRX,LASTUSER,LSTDTEDT,USWHPSTD,ORGNTSRC,ORGNATYP,QKOFSET,SERIES,ORTRXTYP,ORCTRNUM,ORMSTRID,ORMSTRNM,ORDOCNUM,ORPSTDDT,ORTRXSRC,OrigDTASeries,OrigSeqNum,SEQNUMBR,DTA_GL_Status,DTA_Index,CURNCYID,CURRNIDX,RATETPID,EXGTBLID,XCHGRATE,EXCHDATE,TIME1,RTCLCMTD,NOTEINDX,ICTRX,ORCOMID,ORIGINJE,PERIODID,DEBITAMT,CRDTAMNT,ORDBTAMT,ORCRDAMT,DOCDATE,PSTGNMBR,PPSGNMBR,DENXRATE,MCTRXSTT,CorrespondingUnit,VOIDED,Back_Out_JE,Back_Out_JE_Year,Correcting_JE,Correcting_JE_Year,Original_JE,Original_JE_Seq_Num,Original_JE_Year,Ledger_ID,Adjustment_Transaction,APRVLUSERID,APPRVLDT,User_Defined_Text01,User_Defined_Text02,DEX_ROW_TS,DEX_ROW_ID
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,1,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,16384,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,200000,0,200000,0,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.0,4685
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,6,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,32768,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,660815.57,0,660815.57,0,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.0,4686
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,6,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,49152,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,0,200000,0,200000,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.0,4687
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,79,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,65536,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,74100.01,0,74100.01,0,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.0,4688
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,79,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,81920,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,0,142932.56,0,142932.56,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.0,4689
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,80,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,114688,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,0,591369.88,0,591369.88,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.1,4690
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,81,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,98304,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,0,765.22,0,765.22,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.1,4691
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,83,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,131072,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,0,33.11,0,33.11,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.1,4692
+2026,5933,0,GJ         ,Intracompany Upload            ,Post DIS Jan FY26 Inv Alloc    ,00:00.0,GLTRX00003355,84,0,               ,00:00.0,sa             ,GLTX00001004   ,1,1,2,0,                     ,                               ,                                                                 ,                     ,00:00.0,GLTRX00003355,0,0,147456,0,593355561.1,               ,0,               ,               ,0,00:00.0,00:00.0,0,13571,0,     ,0,8,185.19,0,185.19,0,00:00.0,0,0,0,0,     ,0,0,0,0,0,0,0,0,1,0,               ,00:00.0,                               ,                               ,27:22.1,4693
