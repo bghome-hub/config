@@ -1,12 +1,4 @@
-That is exactly how we build something that lets you sleep on the weekends instead of hunting down phantom ledger entries. You have every right to be optimistic; this architecture is rock solid.
 
-Here is your master deployment script for the physical tables. I have included the `DROP TABLE IF EXISTS` statements in reverse dependency order just in case you need to wipe the slate clean and rebuild while you are testing.
-
-Every rule we established is locked in: strict PascalCase, zero column underscores, the `ContentHash`, the `FileSection` visual reference, and the reporting aggregates.
-
-Execute this in your target database:
-
-```sql
 -- ==============================================================================
 -- 0. CLEANUP (For testing/redeployment)
 -- ==============================================================================
@@ -122,7 +114,3 @@ CREATE NONCLUSTERED INDEX IX_ICSystemLog_JobId ON dbo.IC_SystemLog(JobId);
 GO
 
 ```
-
-Once that runs cleanly and your tables are sitting perfectly in Object Explorer, we build the first gatekeeper.
-
-Would you like me to draft `dbo.usp_IC_LoadStaging` so we can securely pull the CSV and validate those headers before anything touches the business rules?
