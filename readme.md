@@ -1,40 +1,68 @@
-CREATE PROCEDURE dbo.usp_IC_Process_Staging
-    @FileID UNIQUEIDENTIFIER
+CREATE PROCEDURE dbo.usp_IC_Import_Master
+    @CsvPath NVARCHAR(4000),
+    @FileName NVARCHAR(260)
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @Co VARCHAR(10);
-    DECLARE @RunID UNIQUEIDENTIFIER;
-    DECLARE @BatchID CHAR(15);
+    DECLARE @FileID UNIQUEIDENTIFIER = NEWID();
+    DECLARE @Step NVARCHAR(50) = 'MASTER_PROCESS';
 
-    -- Loop through each company in the file
-    DECLARE CoCursor CURSOR FOR SELECT DISTINCT Company FROM dbo.IC_Stage_File;
-    OPEN CoCursor;
-    FETCH NEXT FROM CoCursor INTO @Co;
+    -- 1. Initialize the File Record
+    INSERT INTO dbo.IC_File (FileID, FileName, Status)
+    VALUES (@FileID, @FileName, 'PROCESSING');
 
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        SET @RunID = NEWID();
+    BEGIN TRY
+        -- STEP 1: VALIDATE FILE (Bulk Insert & Format Check)
+        EXEC dbo.usp_IC_ValidateFile @CsvPath = @CsvPath, @FileID = @FileID;
+
+        -- STEP 2: PROCESS STAGING (Split into Company Runs & Lines)
+        EXEC dbo.usp_IC_Process_Staging @FileID = @FileID;
+
+        -- STEP 3: VALIDATE RUNS (Accounting Checks)
+        -- Loop through the runs we just created and validate each one
+        DECLARE @RunID UNIQUEIDENTIFIER;
+        DECLARE RunCursor CURSOR FOR 
+            SELECT RunID FROM dbo.IC_Run WHERE FileID = @FileID;
+
+        OPEN RunCursor;
+        FETCH NEXT FROM RunCursor INTO @RunID;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- We wrap each run validation in its own try/catch 
+            -- so one bad batch doesn't kill the whole report.
+            BEGIN TRY
+                EXEC dbo.usp_IC_ValidateRun @RunID = @RunID;
+                
+                UPDATE dbo.IC_Run SET Status = 'VALIDATED' WHERE RunID = @RunID;
+            END TRY
+            BEGIN CATCH
+                UPDATE dbo.IC_Run 
+                SET Status = 'FAILED', 
+                    ErrorMessage = ERROR_MESSAGE() 
+                WHERE RunID = @RunID;
+            END CATCH
+
+            FETCH NEXT FROM RunCursor INTO @RunID;
+        END
+        CLOSE RunCursor; DEALLOCATE RunCursor;
+
+        -- Final File Status
+        UPDATE dbo.IC_File 
+        SET Status = 'COMPLETED' 
+        WHERE FileID = @FileID;
+
+        EXEC dbo.usp_IC_Log @FileID, @Step, 'INFO', 'Import process completed.';
+
+    END TRY
+    BEGIN CATCH
+        -- This catches major failures (like Step 1 Header mismatches)
+        DECLARE @TopLevelError NVARCHAR(MAX) = ERROR_MESSAGE();
         
-        -- Get BatchID from your existing source of truth
-        EXEC dbo.GetNextBatchID @Company = @Co, @BatchID = @BatchID OUTPUT;
+        UPDATE dbo.IC_File 
+        SET Status = 'ERROR', ErrorMessage = @TopLevelError 
+        WHERE FileID = @FileID;
 
-        INSERT INTO dbo.IC_Run (RunID, FileID, Company, BatchID, Status)
-        VALUES (@RunID, @FileID, @Co, @BatchID, 'PENDING');
-
-        -- Move data to Lines
-        INSERT INTO dbo.IC_Line (RunID, Company, Account, Amount, TrxDate, Reference, Reversal)
-        SELECT @RunID, @Co, Account, CAST(Amount AS NUMERIC(19,5)), CAST(TrxDate AS DATE), Reference, Reversal
-        FROM dbo.IC_Stage_File WHERE Company = @Co;
-
-        -- Update the Header Totals for the Report
-        UPDATE dbo.IC_Run SET 
-            LineCount = (SELECT COUNT(*) FROM dbo.IC_Line WHERE RunID = @RunID),
-            DebitTotal = (SELECT ISNULL(SUM(Amount),0) FROM dbo.IC_Line WHERE RunID = @RunID AND Amount > 0),
-            CreditTotal = (SELECT ISNULL(ABS(SUM(Amount)),0) FROM dbo.IC_Line WHERE RunID = @RunID AND Amount < 0)
-        WHERE RunID = @RunID;
-
-        FETCH NEXT FROM CoCursor INTO @Co;
-    END
-    CLOSE CoCursor; DEALLOCATE CoCursor;
+        EXEC dbo.usp_IC_Log @FileID, @Step, 'ERROR', @TopLevelError;
+    END CATCH
 END
