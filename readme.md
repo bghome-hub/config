@@ -1,326 +1,147 @@
-
-function Ensure-Directory {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -Path $Path)) {
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
-    }
-}
-function Send-JobEmail{
-    param(
-        [Parameter(Mandatory=$true)][String]$Subject,
-        [Parameter(Mandatory=$true)][String]$Body
-
-    )
-    
-    $EmailParams = @{
-        SMTPServer = $EmailConfig.Server
-        From       = $EmailConfig.From
-        To         = $EmailConfig.To
-        #CC         = $CC
-        Subject    = $Subject
-        Body       = $Body
-        BodyAsHTML = $true
-    }
-
-    Send-MailMessage @EmailParams
-}
-
-function Get-JobResult{
+function Route-ProcessedFile {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][Guid]$JobId
+        [Parameter(Mandatory=$true)][System.IO.FileInfo]$File,
+        [Parameter(Mandatory=$true)][string]$Status
     )
-
-    $Query = "SELECT JobStatus FROM dbo.IC_ImportJob WHERE JobID= '$JobID'"
-    $QueryResult = Invoke-Sqlcmd -ServerInstance $SQLConfig.Server -Database $SQLConfig.Database -Query $Query -TrustServerCertificate
-
-    $JobStatus = $($QueryResult.JobStatus).ToString().Trim().ToUpper()
-
-    return $JobStatus
-
-}
-
-
-function Write-Log{
-    param(
-        [Parameter(Mandatory=$true)]
-        [String]$Message,
-        [switch]$IncludeHeader,
-        [switch]$IncludeFooter
-    )
-
-    $TimeStamp = Get-Date -Format "yyyyMMdd HH:mm:ss"
     
-    if($IncludeHeader){
-        # Log Username, Clustername, NodeName
-        $User = $env:USERNAME
-        $Hostname = $env:COMPUTERNAME
-        $Node = [System.Environment]::MachineName
-        $LogEntry = "$TimeStamp | User: $User | Hostname: $Hostname | Node: $Node `n$Timestamp | $Message"
-    } else {
-        # Log Message Only
-        $LogEntry = "$TimeStamp | $Message"
-    }
-
-    # Add linebreak
-    if($IncludeFooter){
-        $LogEntry += "`n"
-    }
-
-    Add-Content -Path $Paths.Log -Value $LogEntry
-}
-function Move-File {
-    param(
-        [Parameter(Mandatory = $true)][string]$Source,
-        [Parameter(Mandatory = $true)][string]$DestinationDir
-    )
-    try {
-        Ensure-Directory -Path $DestinationDir
-        $target = Join-Path -Path $DestinationDir -ChildPath (Split-Path -Path $Source -Leaf)
-        return Move-Item -Path $Source -Destination $target -PassThru -Force -ErrorAction Stop
-    }
-    catch {
-        Write-Log "Failed to move file [$Source] to [$DestinationDir]. Error: $($_.Exception.Message)"
-        return $null
-    }
-}
-
-function Invoke-IntracompanyImportSP {
-    param([Parameter(Mandatory = $true)][string]$CsvFullPath)
-
-    Write-Log "Beginning Main Procedure Call"
-
-    $query = @"
-        DECLARE @GeneratedJobID UNIQUEIDENTIFIER;
-
-        EXEC $($SQLConfig.MainSP) 
-          @CSVPath = '$CsvFullPath',
-          @JobID = @GeneratedJobID OUTPUT;
-
-        SELECT @GeneratedJobID AS JobID
-"@
-    
-    Write-Log "Executing Query: $Query"
-
-    try {
-
-        $SQLResult = @(Invoke-Sqlcmd -ServerInstance $SQLConfig.server -Database $SQLConfig.database -Query $query -TrustServerCertificate)
-        $JobID = $SQLResult.JobID
-        if ($null -eq $JobID -or $SQLResult.Count -eq 0) {
-            Write-Log "Did not find JobID - Result count: $($SQLResult.Count)"
-            return "No JobID returned"
+    switch ($Status.ToUpperInvariant()) {
+        'POSTED' {
+            $targetDir = $Paths.Archive
         }
-        else {
-            Write-Log "Found JobID: $JobID"
-            return $JobID
-        }   
+        'PARTIAL' {
+            $targetDir = if ($Paths.ContainsKey('Partial')) { $Paths.Partial } else { $Paths.ErrorDir }
+        }
+        default {
+            $targetDir = $Paths.ErrorDir
+        }
     }
-    catch {
-        Write-Log "SQL/eConnect Error while processing [$CsvFullPath]: $($_.Exception.Message)"
-        return $null
-    }
+
+    Move-File -Source $File.FullName -DestinationDir $targetDir | Out-Null
+    Write-Log "File routed to: $targetDir based on status [$Status]"
 }
 
-function New-DynamicsImportJobEmailContent {
+function New-DynamicsImportErrorEmail {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][Guid]$JobId
+        [Parameter(Mandatory=$true)][Guid]$JobId,
+        [Parameter(Mandatory=$true)][string]$FileName
     )
+    Write-Log "Generating Error HTML Body for JobID: $JobId"
+    
+    $Query = "SELECT TOP 1 LogMessage FROM dbo.IC_SystemLog WHERE JobId = '$JobId' AND LogLevel = 'FATAL' ORDER BY LogId DESC"
+    $SqlResult = Invoke-Sqlcmd -ServerInstance $SQLConfig.Server -Database $SQLConfig.Database -Query $Query -TrustServerCertificate
+    $FatalError = if ($null -ne $SqlResult) { $SqlResult.LogMessage } else { "Unknown fatal error occurred. Check system logs." }
 
-    # 1. Execute the stored procedure to get the raw data
+    $HtmlTemplate = Get-Content $Paths.ErrorTemplate -Raw
+    return $HtmlTemplate -replace '{{JobId}}', $JobId `
+                         -replace '{{FileName}}', $FileName `
+                         -replace '{{RunDate}}', (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') `
+                         -replace '{{ErrorMessage}}', $FatalError
+}
+
+function New-DynamicsImportSuccessEmail {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][Guid]$JobId
+    )
+    Write-Log "Generating Report HTML Body for JobID: $JobId"
+    
     $Query = "EXEC $($SQLConfig.ReportSP) @JobId = '$JobId'"
     $Details = Invoke-Sqlcmd -ServerInstance $SQLConfig.Server -Database $SQLConfig.Database -Query $Query -TrustServerCertificate
 
-    # ==============================================================================
-    # 2. Build the Summary Rows
-    # ==============================================================================
+    # Build Summary Rows
     $SummaryGroups = $Details | Group-Object Company, gp_BatchNumber, gp_Status
     $SummaryHtml = ""
-
     foreach ($Group in $SummaryGroups) {
-        $Comp = $Group.Group[0].Company
-        $Batch = $Group.Group[0].gp_BatchNumber
-        $LineCount = $Group.Count
-
-    # SANITIZE: Handle Nulls, strip trailing SQL spaces, and force uppercase
-        $RawStatus = $Group.Group[0].gp_Status
-        $CleanStatus = if ($null -ne $RawStatus) { $RawStatus.ToString().Trim().ToUpper() } else { "UNKNOWN" }
-
-        # Strict Switch Evaluation
-        switch ($CleanStatus) {
-            'POSTED'   { $StatusClass = 'status-ok'; break }
-            'UNPOSTED' { $StatusClass = 'status-pending'; break }
-            default    { $StatusClass = 'status-fail'; break }
-        }
-
-
-        # Strict array evaluation
-        $StatusClass = if ($CleanStatus -in 'POSTED', 'UNPOSTED') { "status-ok" } else { "status-fail" }
-
-        $SummaryHtml += "<tr>
-            <td>$Comp</td>
-            <td>$Batch</td>
-            <td class='center'><span class='$StatusClass'>$CleanStatus</span></td>
-            <td class='right'>$LineCount</td>
-        </tr>`n"
+        $CleanStatus = if ($null -ne $Group.Group[0].gp_Status) { $Group.Group[0].gp_Status.ToString().Trim().ToUpper() } else { "UNKNOWN" }
+        $StatusClass = switch ($CleanStatus) { 'POSTED' {'status-ok'} 'UNPOSTED' {'status-pending'} default {'status-fail'} }
+        $SummaryHtml += "<tr> <td>$($Group.Group[0].Company)</td> <td>$($Group.Group[0].gp_BatchNumber)</td> <td class='center'><span class='$StatusClass'>$CleanStatus</span></td> <td class='right'>$($Group.Count)</td> </tr>`n"
     }
 
-    # ==============================================================================
-    # 3. Build the Detail Rows (Grouped by Company with Subtotals)
-    # ==============================================================================
-    
-    
-    
+    # Build Detail Rows
     $DetailHtml = ""
     $GroupedDetails = $Details | Group-Object Company
-
     foreach ($CompGroup in $GroupedDetails) {
-        $CompanyName = $CompGroup.Name
-        
-        $DetailHtml += "<tr class='company-header'><td colspan='9'>Company: $CompanyName</td></tr>`n"
-
+        $DetailHtml += "<tr class='company-header'><td colspan='9'>Company: $($CompGroup.Name)</td></tr>`n"
         $SubUpDeb = 0; $SubUpCred = 0; $SubGpDeb = 0; $SubGpCred = 0; $SubVar = 0
 
         foreach ($Row in $CompGroup.Group) {
-            $SubUpDeb  += $Row.Uploaded_Debit
-            $SubUpCred += $Row.Uploaded_Credit
-            $SubGpDeb  += $Row.gp_DebitAmount
-            $SubGpCred += $Row.gp_CreditAmount
-            $SubVar    += $Row.Net_Variance
+            $SubUpDeb += $Row.Uploaded_Debit; $SubUpCred += $Row.Uploaded_Credit
+            $SubGpDeb += $Row.gp_DebitAmount; $SubGpCred += $Row.gp_CreditAmount; $SubVar += $Row.Net_Variance
 
-            $UpDeb  = "{0:N2}" -f $Row.Uploaded_Debit
-            $UpCred = "{0:N2}" -f $Row.Uploaded_Credit
-            $GpDeb  = "{0:N2}" -f $Row.gp_DebitAmount
-            $GpCred = "{0:N2}" -f $Row.gp_CreditAmount
-            $Var    = "{0:N2}" -f $Row.Net_Variance
-
-        # SANITIZE: Handle Nulls, strip trailing SQL spaces, and force uppercase
-            $RawRowStatus = $Row.gp_Status
-            $CleanRowStatus = if ($null -ne $RawRowStatus) { $RawRowStatus.ToString().Trim().ToUpper() } else { "UNKNOWN" }
-
-            # Strict Switch Evaluation
-            switch ($CleanRowStatus) {
-                'POSTED'   { $StatusClass = 'status-ok'; break }
-                'UNPOSTED' { $StatusClass = 'status-pending'; break }
-                default    { $StatusClass = 'status-fail'; break }
-            }
-
-            # Strict array evaluation
-            $StatusClass = if ($CleanRowStatus -in 'POSTED', 'UNPOSTED') { "status-ok" } else { "status-fail" }
-            
+            $CleanRowStatus = if ($null -ne $Row.gp_Status) { $Row.gp_Status.ToString().Trim().ToUpper() } else { "UNKNOWN" }
+            $StatusClass = switch ($CleanRowStatus) { 'POSTED' {'status-ok'} 'UNPOSTED' {'status-pending'} default {'status-fail'} }
             $VarClass = if ($Row.Net_Variance -ne 0) { "variance-bad right" } else { "variance-good right" }
 
-            $DetailHtml += "<tr>
-                <td>$($Row.Company)</td>
-                <td>$($Row.gp_BatchNumber) / JE: $($Row.gp_Journal)</td>
-                <td>$($Row.Account)</td>
-                <td class='right'>$UpDeb</td>
-                <td class='right'>$UpCred</td>
-                <td class='right'>$GpDeb</td>
-                <td class='right'>$GpCred</td>
-                <td class='$VarClass'>$Var</td>
-                <td class='center'><span class='$StatusClass'>$CleanRowStatus</span></td>
-            </tr>`n"
+            $DetailHtml += "<tr> <td>$($Row.Company)</td> <td>$($Row.gp_BatchNumber) / JE: $($Row.gp_Journal)</td> <td>$($Row.Account)</td> <td class='right'>$("{0:N2}" -f $Row.Uploaded_Debit)</td> <td class='right'>$("{0:N2}" -f $Row.Uploaded_Credit)</td> <td class='right'>$("{0:N2}" -f $Row.gp_DebitAmount)</td> <td class='right'>$("{0:N2}" -f $Row.gp_CreditAmount)</td> <td class='$VarClass'>$("{0:N2}" -f $Row.Net_Variance)</td> <td class='center'><span class='$StatusClass'>$CleanRowStatus</span></td> </tr>`n"
         }
-
-        $DetailHtml += "<tr class='subtotal-row'>
-            <td colspan='3' class='right'>$CompanyName Totals:</td>
-            <td class='right'>$("{0:N2}" -f $SubUpDeb)</td>
-            <td class='right'>$("{0:N2}" -f $SubUpCred)</td>
-            <td class='right'>$("{0:N2}" -f $SubGpDeb)</td>
-            <td class='right'>$("{0:N2}" -f $SubGpCred)</td>
-            <td class='right'>$("{0:N2}" -f $SubVar)</td>
-            <td></td>
-        </tr>`n"
+        $DetailHtml += "<tr class='subtotal-row'> <td colspan='3' class='right'>$($CompGroup.Name) Totals:</td> <td class='right'>$("{0:N2}" -f $SubUpDeb)</td> <td class='right'>$("{0:N2}" -f $SubUpCred)</td> <td class='right'>$("{0:N2}" -f $SubGpDeb)</td> <td class='right'>$("{0:N2}" -f $SubGpCred)</td> <td class='right'>$("{0:N2}" -f $SubVar)</td> <td></td> </tr>`n"
     }
 
-
-
-    # 4. Load Template, Swap Tokens, and Save/Send
     $HtmlTemplate = Get-Content $Paths.EmailTemplate -Raw
-
-    # Replace the tokens with our generated rows and metadata
-    $FinalHtml = $HtmlTemplate -replace '{{JobId}}', $JobId `
-                            -replace '{{RunDate}}', (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') `
-                            -replace '{{SummaryRows}}', $SummaryHtml `
-                            -replace '{{DetailRows}}', $DetailHtml
-
-
-    Return $FinalHtml
+    return $HtmlTemplate -replace '{{JobId}}', $JobId `
+                         -replace '{{RunDate}}', (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') `
+                         -replace '{{SummaryRows}}', $SummaryHtml `
+                         -replace '{{DetailRows}}', $DetailHtml
 }
 
-# ----------------------------
-# MAIN
-# ----------------------------
-function Invoke-Main {
 
+function Invoke-Main {
     $Paths.Keys | ForEach-Object {
         if ($_ -ne 'Log') { Ensure-Directory -Path $Paths[$_] }
     }
 
+    # 1. Scan for files
     $files = @(Get-ChildItem -Path $Paths.In -Filter *.csv -File -ErrorAction SilentlyContinue)
     if ($files.Count -eq 0) { return }
 
     Write-Log "-- Import Begin --" -IncludeHeader
 
     foreach ($file in $files) {
-        Write-Log "Found file: $($file.Name)" 
-
+        Write-Log "Found file: $($file.Name)"
+        
+        # 1.5 Isolate the file to prevent locking/double-processing
         $working = Move-File -Source $file.FullName -DestinationDir $Paths.Proc
         if ($null -eq $working) {
             Write-Log "Skipping: file locked/in use or failed to move. File: $($file.Name)"
             continue
         }
-        
+
         try {
-            Write-Log "Starting SQL import for: $($working.FullName)" 
-
+            Write-Log "Starting SQL import for: $($working.FullName)"
+            
+            # 2 & 3. Run the file and get the Job ID back
             $jobId = Invoke-IntracompanyImportSP -CsvFullPath $working.FullName
-            if (-not $jobId) {
-                Move-File -Source $working.FullName -DestinationDir $Paths.ErrorDir | Out-Null
-                Write-Log "No JobID returned. Moved to error: $($file.Name)" 
-                continue
-            }
+            if (-not $jobId) { throw "No JobID returned from SQL." }
 
+            # 4. Check if it ran success/partial/fail
             $jobResult = Get-JobResult -JobID $jobId
-            if (-not $jobResult) {
-                Move-File -Source $working.FullName -DestinationDir $Paths.ErrorDir | Out-Null
-                Write-Log "JobResult not found for JobID [$jobId]. Moved to error: $($file.Name)"
-                continue
+            if (-not $jobResult) { $jobResult = "FAILED" }
+
+            # 5. Go to the function that creates the appropriate email
+            if ($jobResult -in 'POSTED', 'PARTIAL') {
+                $emailBody = New-DynamicsImportSuccessEmail -JobId $jobId
+            } else {
+                $emailBody = New-DynamicsImportErrorEmail -JobId $jobId -FileName $working.Name
             }
 
-            switch ($jobResult.ToUpperInvariant()) {
-                'POSTED' {
-                    $archived = Move-File -Source $working.FullName -DestinationDir $Paths.Archive
-                    if ($null -ne $archived) {
-                        Write-Log "Success: $($file.Name) → archived to $($Paths.Archive)"
-                    }
-                }
-                'PARTIAL' {
-                    $partialDir = if ($Paths.ContainsKey('Partial')) { $Paths.Partial } else { $Paths.ErrorDir }
-                    Move-File -Source $working.FullName -DestinationDir $partialDir | Out-Null
-                    Write-Log "Partial result for JobID [$jobId]. Moved to: $partialDir"
-                }
-                default {
-                    Move-File -Source $working.FullName -DestinationDir $Paths.ErrorDir | Out-Null
-                    Write-Log "Error result for JobID [$jobId]. Moved to error: $($file.Name)" 
-                }
-            }
+            # 6. Move file
+            Route-ProcessedFile -File $working -Status $jobResult
 
-        }
-        catch {
-            Move-File -Source $working.FullName -DestinationDir $Paths.ErrorDir | Out-Null
+            # 7. Send email
+            $subject = "GP Import $($jobResult): $($working.Name)"
+            Send-JobEmail -Subject $subject -Body $emailBody
+
+        } catch {
             Write-Log "Unhandled failure for $($file.Name): $($_.Exception.Message)"
+            Route-ProcessedFile -File $working -Status "FAILED"
+            
+            # Fallback email if the pipeline completely explodes
+            $emailBody = New-DynamicsImportErrorEmail -JobId ([Guid]::Empty) -FileName $working.Name
+            Send-JobEmail -Subject "GP Import CRASHED: $($working.Name)" -Body $emailBody
         }
     }
-
-    Write-Log "Composing Email"
-    $subject = "GP Import Result"
-    $Body = New-DynamicsImportJobEmailContent -JobId $jobId
-
-    Send-JobEmail -Subject $Subject -Body $Body
     
-    write-log "Email Sent"
     Write-Log "-- Import End --" -IncludeFooter
 }
-Invoke-Main
