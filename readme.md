@@ -570,6 +570,38 @@ BEGIN
             RETURN;
         END
 
+        SET @StepName = 'VAL_AMOUNT_PRECISION';
+        
+        IF EXISTS (
+            SELECT 1 FROM dbo.IC_StagingRaw 
+            WHERE JobId = @JobId AND Amount LIKE '%.[0-9][0-9][0-9]%'
+        )
+        BEGIN
+            UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
+            
+            SET @LogMsg = 'Amount value must have no more than 2 decimal precision. Entire job rejected.';
+            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'FATAL', @StepName, @LogMsg);
+            RETURN;
+        END
+
+        SET @StepName = 'VAL_AMOUNT_FORMAT';
+        
+        IF EXISTS (
+            SELECT 1 FROM dbo.IC_StagingRaw 
+            WHERE JobId = @JobId AND TRY_CAST(Amount AS DECIMAL(19,2)) = null
+        )
+        BEGIN
+            UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
+            
+            SET @LogMsg = 'Amount value is in incorrect format. Entire job rejected.';
+            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'FATAL', @StepName, @LogMsg);
+            RETURN;
+        END
+
+    
+
+
+
         DECLARE @JobRevFlag CHAR(1) = (SELECT TOP 1 UPPER(LTRIM(RTRIM(Reversal))) FROM dbo.IC_StagingRaw WHERE JobId = @JobId);
 
         -- ==============================================================================
@@ -620,6 +652,8 @@ BEGIN
             TotalAmount = (SELECT SUM(DebitAmount) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId)
         FROM dbo.IC_CompanyHeader h
         WHERE h.JobId = @JobId;
+
+
 
         -- ==============================================================================
         -- PHASE 3: THE DUPLICATE GUARD (CONTENT HASHING)
@@ -679,11 +713,18 @@ BEGIN
         WHERE h.JobId = @JobId AND h.HeaderStatus = 'PENDING'
         AND (SELECT SUM(DebitAmount) - SUM(CreditAmount) FROM dbo.IC_DetailLine l WHERE l.HeaderId = h.HeaderId) <> 0;
 
+        declare @hs NVARCHAR(300) 
+        set @hs = (SELECT headerstatus from IC_CompanyHeader where jobid = @jobid)
+
+        insert into dbo.IC_SystemLog values (@jobid, 'hid', 'INFO', 'Sum check', @hs )
+
+
         SET @LogMsg = 'Company batch does not balance (Debits <> Credits).';
         INSERT INTO dbo.IC_SystemLog (JobId, HeaderId, LogLevel, StepName, LogMessage)
         SELECT @JobId, HeaderId, 'ERROR', @StepName, @LogMsg
         FROM dbo.IC_CompanyHeader WHERE JobId = @JobId AND HeaderStatus = 'FAILED'
         AND HeaderId NOT IN (SELECT HeaderId FROM dbo.IC_SystemLog WHERE JobId = @JobId);
+
 
         -- ==============================================================================
         -- PHASE 5: DYNAMICS GP CROSS-DATABASE CHECKS
@@ -805,7 +846,7 @@ BEGIN
         
         UPDATE dbo.IC_ImportJob SET JobStatus = 'FAILED' WHERE JobId = @JobId;
 
-        SET @LogMsg = 'Validation Exception: ' + @ErrMessage;
+        SET @LogMsg = 'Validation Exception Unable to Load File: ' + @ErrMessage;
         INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage)
         VALUES (@JobId, 'FATAL', @StepName, @LogMsg);
         
@@ -823,9 +864,6 @@ GO
 #Install-Module -Name SqlServer -Scope AllUsers -Force
 # or update
 #Update-Module -Name SqlServer
-
-
-
 
 
 
