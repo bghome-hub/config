@@ -1,8 +1,11 @@
-ELSE
-        BEGIN
-            -- The file structure is valid, even if the individual batches failed business rules.
-            -- Keep the pipeline moving so the Reconciliation Report generates.
-            UPDATE dbo.IC_ImportJob SET JobStatus = 'VALIDATED' WHERE JobId = @JobId;
-            SET @LogMsg = 'Validation complete. Zero batches survived, moving to reconciliation.';
-            INSERT INTO dbo.IC_SystemLog (JobId, LogLevel, StepName, LogMessage) VALUES (@JobId, 'WARN', @StepName, @LogMsg);
-        END
+CASE 
+                    WHEN i.HeaderStatus IN (''FAILED'', ''PENDING'', ''SKIPPED'') THEN 
+                        CAST(''NOT SUBMITTED - '' + ISNULL((
+                            SELECT TOP 1 log.LogMessage 
+                            FROM DYNAMICS.dbo.IC_SystemLog log 
+                            INNER JOIN DYNAMICS.dbo.IC_CompanyHeader ch ON log.HeaderId = ch.HeaderId
+                            WHERE log.JobId = @pJobId AND ch.Company = @pCompany AND log.LogLevel = ''ERROR''
+                        ), ''Check logs'') AS VARCHAR(500))
+                    WHEN g.GpState IS NULL THEN ''DELETED FROM GP''
+                    ELSE SUBSTRING(g.GpState, 3, 20) -- Strip the sorting prefix
+                END AS GpState,
