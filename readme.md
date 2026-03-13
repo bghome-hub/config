@@ -1,30 +1,26 @@
--- Audit 1: Check all sysadmin members and their modification dates
-SELECT 
-    m.name AS [Account Name],
-    m.type_desc AS [Account Type],
-    m.is_disabled AS [Is Disabled],
-    m.create_date AS [Creation Date],
-    m.modify_date AS [Last Modified Date],
-    r.name AS [Role Name]
-FROM sys.server_role_members srm
-INNER JOIN sys.server_principals r ON srm.role_principal_id = r.principal_id
-INNER JOIN sys.server_principals m ON srm.member_principal_id = m.principal_id
-WHERE r.name = 'sysadmin'
-ORDER BY m.modify_date DESC;
+DECLARE @TracePath NVARCHAR(260);
 
+-- Get the path of the current default trace
+SELECT @TracePath = path 
+FROM sys.traces 
+WHERE is_default = 1;
 
--- Audit 2: Hunt for accounts explicitly granted CONTROL SERVER
+-- String manipulation to grab the base trace file name so we read the entire rollover chain
+SET @TracePath = REVERSE(@TracePath);
+SET @TracePath = SUBSTRING(@TracePath, CHARINDEX('_', @TracePath), LEN(@TracePath));
+SET @TracePath = REVERSE(@TracePath) + '.trc';
+
+-- Query the trace for any modifications to the sa account
 SELECT 
-    grantee.name AS [Account Name],
-    grantee.type_desc AS [Account Type],
-    grantee.is_disabled AS [Is Disabled],
-    grantee.modify_date AS [Last Modified Date],
-    p.permission_name AS [Permission Granted],
-    p.state_desc AS [State]
-FROM sys.server_permissions p
-INNER JOIN sys.server_principals grantee ON p.grantee_principal_id = grantee.principal_id
-WHERE p.class = 100 -- Server level
-  AND p.permission_name = 'CONTROL SERVER'
-  AND grantee.name NOT LIKE 'NT SERVICE\%' -- Filter out standard service accounts
-  AND grantee.name <> 'sa'
-ORDER BY grantee.modify_date DESC;
+    t.StartTime AS [Execution Time],
+    te.name AS [Event Name],
+    t.LoginName AS [Executed By],
+    t.TargetLoginName AS [Target Account],
+    t.HostName AS [Originating Host],
+    t.ApplicationName AS [Application Used],
+    t.ClientProcessID AS [PID]
+FROM sys.fn_trace_gettable(@TracePath, DEFAULT) t
+INNER JOIN sys.trace_events te ON t.EventClass = te.trace_event_id
+WHERE t.TargetLoginName = 'sa'
+  AND te.name IN ('Audit Login Change Property Event', 'Audit Addlogin Event')
+ORDER BY t.StartTime DESC;
