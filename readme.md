@@ -1,14 +1,20 @@
 SELECT 
-    name AS [Account Name],
-    type_desc AS [Account Type],
-    is_disabled AS [Is Disabled],
-    create_date AS [Creation Date],
-    modify_date AS [Last Modified Date],
-    default_database_name AS [Default Database]
-FROM sys.server_principals
-WHERE create_date >= '2026-03-08'
-  AND type IN ('S', 'U', 'G') -- S = SQL Login, U = Windows User, G = Windows Group
-  AND name NOT LIKE 'NT SERVICE\%'
-  AND name NOT LIKE 'NT AUTHORITY\%'
-  AND name NOT LIKE '##MS_%' -- Filter out internal certificate-mapped logins
-ORDER BY create_date DESC;
+    j.name AS [Job Name],
+    jh.step_name AS [Step Name],
+    jh.run_date AS [Run Date (YYYYMMDD)],
+    STUFF(STUFF(RIGHT('000000' + CAST(jh.run_time AS VARCHAR(6)), 6), 3, 0, ':'), 6, 0, ':') AS [Run Time],
+    jh.run_status AS [Status (1=Success)],
+    js.subsystem AS [Subsystem],
+    js.command AS [Command Executed]
+FROM msdb.dbo.sysjobs j
+INNER JOIN msdb.dbo.sysjobhistory jh ON j.job_id = jh.job_id
+INNER JOIN msdb.dbo.sysjobsteps js ON jh.job_id = js.job_id AND jh.step_id = js.step_id
+WHERE jh.run_date = 20260308 -- Specifically Sunday, March 8th
+  AND (
+      j.name LIKE '%sync%' 
+      OR j.name LIKE '%login%' 
+      OR js.subsystem IN ('PowerShell', 'CmdExec')
+      OR js.command LIKE '%ALTER LOGIN%'
+      OR js.command LIKE '%dbatools%'
+  )
+ORDER BY jh.run_time DESC;
