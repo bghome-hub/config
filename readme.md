@@ -1,131 +1,137 @@
-Here is the fully rewritten S02 procedure.
-I’ve structured it for readability by grouping the column alignments, brought the table variable declaration to the top, and integrated the BoA_AV_Lifecycle initialization.
-I also gave you some pushback on your CTE. You had SELECT TOP 100 PERCENT coupled with an ORDER BY e.VendorId in there. Using TOP 100 PERCENT is an old SQL hack to force an ORDER BY inside a view or CTE, but since you are already filtering for a single @VendorId, sorting it does absolutely nothing except waste optimizer cycles. I ripped that out so the CTE is clean and purposeful.
-CREATE PROCEDURE dbo.usp_BoA_AV_Req_S02_CreateVendorRequests
+CREATE PROCEDURE dbo.usp_BoA_AV_Req_S04_WriteFile
 (
-    @VendorId NVARCHAR(30),
-    @DefaultValidation NVARCHAR(20) = N'STATUSANDOWNER'
+    @BatchId UNIQUEIDENTIFIER,
+    @Environment NVARCHAR(10) = N'PREPROD',
+    @FullPath NVARCHAR(4000) OUTPUT
 )
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    /* Purpose: Create request rows in BoA_AV_Req_Outbox for a single vendor 
-             that S01 identified as changed, and initialize the Lifecycle tracker.
-    Rules:   - No date logic or hash logic
-             - Insert-only, Idempotent via NOT EXISTS
-             - One vendor at a time
-    */
+    DECLARE @OutFolder NVARCHAR(4000),
+            @FileName NVARCHAR(260),
+            @cmd NVARCHAR(4000),
+            @cmdSql NVARCHAR(4000),
+            @proc SYSNAME = N'usp_BoA_AV_Req_S04_WriteFile';
 
-    ------------------------------------------------------------
-    -- Guard clause
-    ------------------------------------------------------------
-    IF @VendorId IS NULL RETURN;
+    BEGIN TRY
+        ------------------------------------------------------------
+        -- 1) Validate batch
+        ------------------------------------------------------------
+        SELECT @FileName = FileName 
+        FROM dbo.BoA_AV_Req_Batches 
+        WHERE BatchId = @BatchId AND Exported = 0;
 
-    ------------------------------------------------------------
-    -- Variables
-    ------------------------------------------------------------
-    -- Table variable to capture the newly generated EndToEndId
-    DECLARE @InsertedRows TABLE (
-        EndToEndId NVARCHAR(36),
-        VendorId   NVARCHAR(30)
-    );
+        IF @FileName IS NULL
+        BEGIN
+            RAISERROR('No unexported batch found for supplied BatchId.', 16, 1);
+            RETURN;
+        END
 
-    ------------------------------------------------------------
-    -- Source data for this vendor
-    ------------------------------------------------------------
-    ;WITH src AS (
-        SELECT 
-            e.VendorId,
-            v.VENDNAME,
-            v.Addr1,
-            v.Addr2,
-            v.Addr3,
-            v.City,
-            v.State,
-            v.PostalCode,
-            v.Country,
-            v.WorkPhone,
-            v.HomePhone,
-            dbo.fn_BoA_DigitsOnly(e.RoutingNumber) AS RoutingNumber,
-            dbo.fn_BoA_DigitsOnly(e.AccountNumber) AS AccountNumber,
-            COALESCE(e.ValidationType, @DefaultValidation) AS ValidationType
-        FROM dbo.v_GP_VendorEFT e
-        JOIN dbo.v_GP_VendorPreferredAddress v ON v.VENDORID = e.VendorId
-        WHERE e.VendorId = @VendorId
-    )
-    ------------------------------------------------------------
-    -- Insert new Outbox rows only & Output the IDs
-    ------------------------------------------------------------
-    INSERT dbo.BoA_AV_Req_Outbox (
-        EndToEndId, ValidationType, AccountNumber, RoutingNumber, AgentQualifier,
-        AgentCountry, NamePrefix, NameSuffix, FirstName, MiddleName, LastName,
-        BusinessName, Addr1, Addr2, Addr3, PostalCode, City, State, Country,
-        WorkPhone, HomePhone, VendorId, VendorName, Status, FileName,
-        CreatedUtc, LastUpdatedUtc, ErrorText
-    )
-    OUTPUT inserted.EndToEndId, inserted.VendorId 
-      INTO @InsertedRows (EndToEndId, VendorId)
-    SELECT 
-        CONVERT(NVARCHAR(36), NEWID()), 
-        UPPER(s.ValidationType), 
-        ISNULL(s.AccountNumber, N''), 
-        ISNULL(s.RoutingNumber, N''), 
-        'USABA', 
-        'US', 
-        NULL, 
-        NULL, 
-        NULL, 
-        NULL, 
-        NULL, 
-        dbo.fn_BoA_SanitizeText(s.VENDNAME), 
-        dbo.fn_BoA_SanitizeText(s.Addr1), 
-        dbo.fn_BoA_SanitizeText(s.Addr2), 
-        dbo.fn_BoA_SanitizeText(s.Addr3), 
-        dbo.fn_BoA_SanitizeText(s.PostalCode), 
-        dbo.fn_BoA_SanitizeText(s.City), 
-        dbo.fn_BoA_SanitizeText(s.State), 
-        'US', 
-        dbo.fn_BoA_DigitsOnly(s.WorkPhone), 
-        dbo.fn_BoA_DigitsOnly(s.HomePhone), 
-        s.VendorId, 
-        dbo.fn_BoA_SanitizeText(s.VENDNAME), 
-        N'Pending', 
-        NULL, 
-        SYSUTCDATETIME(), 
-        SYSUTCDATETIME(), 
-        NULL
-    FROM src s
-    WHERE NOT EXISTS (
-        SELECT 1 
+        ------------------------------------------------------------
+        -- 2) Resolve output folder
+        ------------------------------------------------------------
+        SET @OutFolder = CASE 
+            WHEN @Environment = 'PROD' THEN N'\\VLOBPRODFS\PRODUCTION_PASS\' 
+            ELSE N'\\VLOBPREPRODFS\PREPROD_PASS\' 
+        END + N'GP2018Data\FileTransfer\boa_av\sent_files';
+        
+        SET @FullPath = @OutFolder + N'\' + @FileName;
+
+        ------------------------------------------------------------
+        -- 3) Write CSV via BCP
+        ------------------------------------------------------------
+        SET @cmd = N'bcp "SELECT CsvLine FROM ' + QUOTENAME(DB_NAME()) + 
+                   N'.dbo.BoA_AV_Req_ExportBuffer WHERE BatchId = ''' + 
+                   CONVERT(NVARCHAR(36), @BatchId) + 
+                   N''' ORDER BY LineNumber" queryout "' + 
+                   @FullPath + N'" -c -T -S ' + @@SERVERNAME;
+                   
+        SET @cmdSql = N'EXEC master..xp_cmdshell @c';
+        
+        EXEC sp_executesql @cmdSql, N'@c NVARCHAR(4000)', @c = @cmd;
+
+        ------------------------------------------------------------
+        -- 4) Verify file existence
+        ------------------------------------------------------------
+        DECLARE @exists TABLE (
+            FileExists INT, 
+            FileIsDirectory INT, 
+            ParentDirExists INT
+        );
+        
+        INSERT @exists EXEC master..xp_fileexist @FullPath;
+        
+        IF NOT EXISTS (SELECT 1 FROM @exists WHERE FileExists = 1)
+        BEGIN
+            RAISERROR('BCP reported success but file not found: %s', 16, 1, @FullPath);
+            RETURN;
+        END
+
+        ------------------------------------------------------------
+        -- 5) Mark batch + rows exported
+        ------------------------------------------------------------
+        UPDATE dbo.BoA_AV_Req_Batches 
+        SET 
+            Exported = 1, 
+            ExportPath = @FullPath, 
+            Notes = CONCAT(ISNULL(Notes,''), ' Exported ', CONVERT(VARCHAR(19), SYSUTCDATETIME(), 120), ' UTC')
+        WHERE BatchId = @BatchId;
+
+        UPDATE o 
+        SET 
+            o.Status = 'Exported', 
+            o.LastUpdatedUtc = SYSUTCDATETIME()
         FROM dbo.BoA_AV_Req_Outbox o 
-        WHERE o.VendorId      = s.VendorId 
-          AND o.RoutingNumber = s.RoutingNumber 
-          AND o.AccountNumber = s.AccountNumber 
-          AND o.Status IN ('Pending', 'ReadyForBatch', 'ReadyForUpload')
-    );
+        WHERE o.FileName = @FileName 
+          AND o.Status = 'ReadyForUpload';
 
-    ------------------------------------------------------------
-    -- Initialize the Lifecycle record
-    ------------------------------------------------------------
-    INSERT dbo.BoA_AV_Lifecycle (
-        EndToEndId, 
-        VendorId, 
-        RequestCreatedUtc, 
-        ProcessingStatus,
-        CreatedUtc,
-        LastUpdatedUtc
-    )
-    SELECT 
-        EndToEndId, 
-        VendorId, 
-        SYSUTCDATETIME(), 
-        'CREATED',
-        SYSUTCDATETIME(),
-        SYSUTCDATETIME()
-    FROM @InsertedRows;
+        ------------------------------------------------------------
+        -- 6) Advance the Lifecycle Tracker
+        ------------------------------------------------------------
+        UPDATE l
+        SET 
+            l.RequestBatchId = @BatchId,
+            l.RequestFileName = @FileName,
+            l.FileSentUtc = SYSUTCDATETIME(),
+            l.ProcessingStatus = 'SENT',
+            l.LastUpdatedUtc = SYSUTCDATETIME()
+        FROM dbo.BoA_AV_Lifecycle l
+        JOIN dbo.BoA_AV_Req_Outbox o ON o.EndToEndId = l.EndToEndId
+        WHERE o.FileName = @FileName 
+          AND o.Status = 'Exported';
 
+        ------------------------------------------------------------
+        -- 7) Notify
+        ------------------------------------------------------------
+        EXEC dbo.usp_BoA_AV_Req_S05_SendEmail 
+            @BatchId = @BatchId, 
+            @FileName = @FileName, 
+            @ExportPath = @FullPath, 
+            @Status = 'SUCCESS';
+
+    END TRY
+    BEGIN CATCH
+        INSERT dbo.BoA_AV_JobLog (
+            StepName, BatchId, FileName, Message, ErrorNumber, 
+            ErrorSeverity, ErrorState, ErrorLine, ErrorProc
+        ) 
+        VALUES (
+            @proc, @BatchId, @FileName, ERROR_MESSAGE(), ERROR_NUMBER(), 
+            ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE()
+        );
+
+        SET @FileName = ISNULL(@FileName, 'UNKNOWN');
+        DECLARE @err_msg NVARCHAR(MAX) = ERROR_MESSAGE();
+        
+        EXEC dbo.usp_BoA_AV_Req_S05_SendEmail 
+            @BatchId = @BatchId, 
+            @FileName = @FileName, 
+            @ExportPath = NULL, 
+            @Status = 'FAILED', 
+            @ErrorMessage = @err_msg;
+            
+        THROW;
+    END CATCH
 END;
 GO
-
-Would you like me to rewrite S04 (usp_BoA_AV_Req_S04_WriteFile) next so it updates that newly created Lifecycle record to 'SENT' after BCP drops the file?
