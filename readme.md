@@ -1,117 +1,131 @@
-CREATE PROCEDURE dbo.usp_BoA_AV_Req_S03_WriteRows
+Here is the fully rewritten S02 procedure.
+I’ve structured it for readability by grouping the column alignments, brought the table variable declaration to the top, and integrated the BoA_AV_Lifecycle initialization.
+I also gave you some pushback on your CTE. You had SELECT TOP 100 PERCENT coupled with an ORDER BY e.VendorId in there. Using TOP 100 PERCENT is an old SQL hack to force an ORDER BY inside a view or CTE, but since you are already filtering for a single @VendorId, sorting it does absolutely nothing except waste optimizer cycles. I ripped that out so the CTE is clean and purposeful.
+CREATE PROCEDURE dbo.usp_BoA_AV_Req_S02_CreateVendorRequests
 (
-    @TestMode BIT = 1,
-    @BatchId UNIQUEIDENTIFIER OUTPUT,
-    @FileName NVARCHAR(260) OUTPUT,
-    @RowsBuffered INT OUTPUT
+    @VendorId NVARCHAR(30),
+    @DefaultValidation NVARCHAR(20) = N'STATUSANDOWNER'
 )
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @proc SYSNAME = N'usp_BoA_AV_Req_S03_WriteRows';
+
+    /* Purpose: Create request rows in BoA_AV_Req_Outbox for a single vendor 
+             that S01 identified as changed, and initialize the Lifecycle tracker.
+    Rules:   - No date logic or hash logic
+             - Insert-only, Idempotent via NOT EXISTS
+             - One vendor at a time
+    */
 
     ------------------------------------------------------------
-    -- 1) Select eligible Outbox rows
+    -- Guard clause
     ------------------------------------------------------------
-    SELECT o.* INTO #Batch 
-    FROM dbo.BoA_AV_Req_Outbox o
-    WHERE o.Status IN ('Pending', 'ReadyForBatch')
-    ORDER BY o.EndToEndId;
-
-    IF NOT EXISTS (SELECT 1 FROM #Batch)
-    BEGIN
-        SET @BatchId = NULL;
-        SET @FileName = NULL;
-        SET @RowsBuffered = 0;
-        RETURN;
-    END
-
-    SET @BatchId = NEWID();
+    IF @VendorId IS NULL RETURN;
 
     ------------------------------------------------------------
-    -- 2) Structural Validation ONLY (Protecting the pipeline)
+    -- Variables
     ------------------------------------------------------------
-    -- We must have a valid EndToEndId to map the bank's response back to our system.
-    UPDATE o SET Status='Failed', ErrorText='EndToEndId length invalid'
-    FROM dbo.BoA_AV_Req_Outbox o JOIN #Batch b ON b.OutboxID = o.OutboxID
-    WHERE LEN(o.EndToEndId) NOT BETWEEN 8 AND 36;
-
-    -- Remove failed rows from the current batch processing scope
-    DELETE b FROM #Batch b
-    JOIN dbo.BoA_AV_Req_Outbox o ON o.OutboxID = b.OutboxID
-    WHERE o.Status = 'Failed';
-
-    IF NOT EXISTS (SELECT 1 FROM #Batch)
-    BEGIN
-        SET @BatchId = NULL;
-        SET @RowsBuffered = 0;
-        RETURN;
-    END
+    -- Table variable to capture the newly generated EndToEndId
+    DECLARE @InsertedRows TABLE (
+        EndToEndId NVARCHAR(36),
+        VendorId   NVARCHAR(30)
+    );
 
     ------------------------------------------------------------
-    -- 3) Build file name
+    -- Source data for this vendor
     ------------------------------------------------------------
-    DECLARE @ts NVARCHAR(20) = CONVERT(CHAR(8), SYSUTCDATETIME(), 112) + '_' + REPLACE(CONVERT(CHAR(8), SYSUTCDATETIME(), 108), ':', '');
-    SET @FileName = CASE WHEN @TestMode = 1 THEN 'TEST_' ELSE '' END + 'AVREQ_' + @ts + '.csv';
-
+    ;WITH src AS (
+        SELECT 
+            e.VendorId,
+            v.VENDNAME,
+            v.Addr1,
+            v.Addr2,
+            v.Addr3,
+            v.City,
+            v.State,
+            v.PostalCode,
+            v.Country,
+            v.WorkPhone,
+            v.HomePhone,
+            dbo.fn_BoA_DigitsOnly(e.RoutingNumber) AS RoutingNumber,
+            dbo.fn_BoA_DigitsOnly(e.AccountNumber) AS AccountNumber,
+            COALESCE(e.ValidationType, @DefaultValidation) AS ValidationType
+        FROM dbo.v_GP_VendorEFT e
+        JOIN dbo.v_GP_VendorPreferredAddress v ON v.VENDORID = e.VendorId
+        WHERE e.VendorId = @VendorId
+    )
     ------------------------------------------------------------
-    -- 4) Build CSV rows (85 columns)
+    -- Insert new Outbox rows only & Output the IDs
     ------------------------------------------------------------
-    -- Stripping commas inline to prevent column shifting.
-    -- All other GP data is sent raw. If it's bad, the bank rejects it.
-    INSERT dbo.BoA_AV_Req_ExportBuffer (BatchId, LineNumber, EndToEndId, FileName, CsvLine)
+    INSERT dbo.BoA_AV_Req_Outbox (
+        EndToEndId, ValidationType, AccountNumber, RoutingNumber, AgentQualifier,
+        AgentCountry, NamePrefix, NameSuffix, FirstName, MiddleName, LastName,
+        BusinessName, Addr1, Addr2, Addr3, PostalCode, City, State, Country,
+        WorkPhone, HomePhone, VendorId, VendorName, Status, FileName,
+        CreatedUtc, LastUpdatedUtc, ErrorText
+    )
+    OUTPUT inserted.EndToEndId, inserted.VendorId 
+      INTO @InsertedRows (EndToEndId, VendorId)
     SELECT 
-        @BatchId, 
-        ROW_NUMBER() OVER (ORDER BY o.EndToEndId), 
-        o.EndToEndId, 
-        @FileName,
-        CONCAT_WS(',',
-            o.EndToEndId,
-            UPPER(o.ValidationType),
-            REPLACE(o.AccountNumber, ',', ''),
-            '', 
-            REPLACE(o.RoutingNumber, ',', ''),
-            'USABA',
-            'US',
-            '', 
-            REPLACE(o.NamePrefix, ',', ''),
-            '', 
-            REPLACE(o.NameSuffix, ',', ''),
-            REPLACE(o.FirstName, ',', ''),
-            REPLACE(o.MiddleName, ',', ''),
-            REPLACE(o.LastName, ',', ''),
-            REPLACE(o.BusinessName, ',', ''),
-            '', '', '', '', '', 
-            REPLACE(o.Addr1, ',', ''),
-            REPLACE(o.Addr2, ',', ''),
-            REPLACE(o.Addr3, ',', ''),
-            REPLACE(o.PostalCode, ',', ''),
-            REPLACE(o.City, ',', ''),
-            REPLACE(o.State, ',', ''),
-            REPLACE(o.Country, ',', ''),
-            '', 
-            REPLACE(o.WorkPhone, ',', ''),
-            REPLACE(o.HomePhone, ',', '')
-        ) + REPLICATE(',', 55)
-    FROM dbo.BoA_AV_Req_Outbox o
-    JOIN #Batch b ON b.OutboxID = o.OutboxID;
+        CONVERT(NVARCHAR(36), NEWID()), 
+        UPPER(s.ValidationType), 
+        ISNULL(s.AccountNumber, N''), 
+        ISNULL(s.RoutingNumber, N''), 
+        'USABA', 
+        'US', 
+        NULL, 
+        NULL, 
+        NULL, 
+        NULL, 
+        NULL, 
+        dbo.fn_BoA_SanitizeText(s.VENDNAME), 
+        dbo.fn_BoA_SanitizeText(s.Addr1), 
+        dbo.fn_BoA_SanitizeText(s.Addr2), 
+        dbo.fn_BoA_SanitizeText(s.Addr3), 
+        dbo.fn_BoA_SanitizeText(s.PostalCode), 
+        dbo.fn_BoA_SanitizeText(s.City), 
+        dbo.fn_BoA_SanitizeText(s.State), 
+        'US', 
+        dbo.fn_BoA_DigitsOnly(s.WorkPhone), 
+        dbo.fn_BoA_DigitsOnly(s.HomePhone), 
+        s.VendorId, 
+        dbo.fn_BoA_SanitizeText(s.VENDNAME), 
+        N'Pending', 
+        NULL, 
+        SYSUTCDATETIME(), 
+        SYSUTCDATETIME(), 
+        NULL
+    FROM src s
+    WHERE NOT EXISTS (
+        SELECT 1 
+        FROM dbo.BoA_AV_Req_Outbox o 
+        WHERE o.VendorId      = s.VendorId 
+          AND o.RoutingNumber = s.RoutingNumber 
+          AND o.AccountNumber = s.AccountNumber 
+          AND o.Status IN ('Pending', 'ReadyForBatch', 'ReadyForUpload')
+    );
 
     ------------------------------------------------------------
-    -- 5) Finalize batch + Outbox
+    -- Initialize the Lifecycle record
     ------------------------------------------------------------
-    SELECT @RowsBuffered = COUNT(*) 
-    FROM dbo.BoA_AV_Req_ExportBuffer 
-    WHERE BatchId = @BatchId;
-
-    INSERT dbo.BoA_AV_Req_Batches (BatchId, FileName, RowsBuffered)
-    VALUES (@BatchId, @FileName, @RowsBuffered);
-
-    UPDATE o SET 
-        o.Status = 'ReadyForUpload',
-        o.FileName = @FileName,
-        o.LastUpdatedUtc = SYSUTCDATETIME()
-    FROM dbo.BoA_AV_Req_Outbox o
-    JOIN #Batch b ON b.OutboxID = o.OutboxID;
+    INSERT dbo.BoA_AV_Lifecycle (
+        EndToEndId, 
+        VendorId, 
+        RequestCreatedUtc, 
+        ProcessingStatus,
+        CreatedUtc,
+        LastUpdatedUtc
+    )
+    SELECT 
+        EndToEndId, 
+        VendorId, 
+        SYSUTCDATETIME(), 
+        'CREATED',
+        SYSUTCDATETIME(),
+        SYSUTCDATETIME()
+    FROM @InsertedRows;
 
 END;
 GO
+
+Would you like me to rewrite S04 (usp_BoA_AV_Req_S04_WriteFile) next so it updates that newly created Lifecycle record to 'SENT' after BCP drops the file?
