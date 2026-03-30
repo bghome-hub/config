@@ -1,113 +1,117 @@
-CREATE PROCEDURE dbo.usp_BoA_AV_Req_RunVendorAccountVerification
+CREATE PROCEDURE dbo.usp_BoA_AV_Req_S03_WriteRows
 (
-    @TestMode bit = 1
+    @TestMode BIT = 1,
+    @BatchId UNIQUEIDENTIFIER OUTPUT,
+    @FileName NVARCHAR(260) OUTPUT,
+    @RowsBuffered INT OUTPUT
 )
-AS 
+AS
 BEGIN
     SET NOCOUNT ON;
+    DECLARE @proc SYSNAME = N'usp_BoA_AV_Req_S03_WriteRows';
 
-    DECLARE @BatchId uniqueidentifier, 
-            @FileName nvarchar(260), 
-            @RowsBuffered int, 
-            @VendorId nvarchar(30);
+    ------------------------------------------------------------
+    -- 1) Select eligible Outbox rows
+    ------------------------------------------------------------
+    SELECT o.* INTO #Batch 
+    FROM dbo.BoA_AV_Req_Outbox o
+    WHERE o.Status IN ('Pending', 'ReadyForBatch')
+    ORDER BY o.EndToEndId;
 
-    BEGIN TRY
-        -------------------------------------------------
-        -- STEP 01: Detect changed vendors
-        -------------------------------------------------
-        DECLARE @ChangedVendors TABLE (
-            VendorId NVARCHAR(30) NOT NULL,
-            PayloadHash VARBINARY(32) NOT NULL
-        );
+    IF NOT EXISTS (SELECT 1 FROM #Batch)
+    BEGIN
+        SET @BatchId = NULL;
+        SET @FileName = NULL;
+        SET @RowsBuffered = 0;
+        RETURN;
+    END
 
-        INSERT @ChangedVendors (VendorId, PayloadHash)
-        EXEC dbo.usp_BoA_AV_Req_S01_FindChangedVendors;
+    SET @BatchId = NEWID();
 
-        IF NOT EXISTS (SELECT 1 FROM @ChangedVendors) RETURN;
+    ------------------------------------------------------------
+    -- 2) Structural Validation ONLY (Protecting the pipeline)
+    ------------------------------------------------------------
+    -- We must have a valid EndToEndId to map the bank's response back to our system.
+    UPDATE o SET Status='Failed', ErrorText='EndToEndId length invalid'
+    FROM dbo.BoA_AV_Req_Outbox o JOIN #Batch b ON b.OutboxID = o.OutboxID
+    WHERE LEN(o.EndToEndId) NOT BETWEEN 8 AND 36;
 
-        -------------------------------------------------
-        -- BEGIN TRANSACTION
-        -------------------------------------------------
-        BEGIN TRAN;
+    -- Remove failed rows from the current batch processing scope
+    DELETE b FROM #Batch b
+    JOIN dbo.BoA_AV_Req_Outbox o ON o.OutboxID = b.OutboxID
+    WHERE o.Status = 'Failed';
 
-        -------------------------------------------------
-        -- STEP 02: Create request rows
-        -------------------------------------------------
-        DECLARE vendor_cur CURSOR LOCAL FAST_FORWARD FOR
-            SELECT VendorId FROM @ChangedVendors;
+    IF NOT EXISTS (SELECT 1 FROM #Batch)
+    BEGIN
+        SET @BatchId = NULL;
+        SET @RowsBuffered = 0;
+        RETURN;
+    END
 
-        OPEN vendor_cur;
-        FETCH NEXT FROM vendor_cur INTO @VendorId;
+    ------------------------------------------------------------
+    -- 3) Build file name
+    ------------------------------------------------------------
+    DECLARE @ts NVARCHAR(20) = CONVERT(CHAR(8), SYSUTCDATETIME(), 112) + '_' + REPLACE(CONVERT(CHAR(8), SYSUTCDATETIME(), 108), ':', '');
+    SET @FileName = CASE WHEN @TestMode = 1 THEN 'TEST_' ELSE '' END + 'AVREQ_' + @ts + '.csv';
 
-        WHILE @@FETCH_STATUS = 0
-        BEGIN
-            EXEC dbo.usp_BoA_AV_Req_S02_CreateVendorRequests @VendorId = @VendorId;
-            FETCH NEXT FROM vendor_cur INTO @VendorId;
-        END
+    ------------------------------------------------------------
+    -- 4) Build CSV rows (85 columns)
+    ------------------------------------------------------------
+    -- Stripping commas inline to prevent column shifting.
+    -- All other GP data is sent raw. If it's bad, the bank rejects it.
+    INSERT dbo.BoA_AV_Req_ExportBuffer (BatchId, LineNumber, EndToEndId, FileName, CsvLine)
+    SELECT 
+        @BatchId, 
+        ROW_NUMBER() OVER (ORDER BY o.EndToEndId), 
+        o.EndToEndId, 
+        @FileName,
+        CONCAT_WS(',',
+            o.EndToEndId,
+            UPPER(o.ValidationType),
+            REPLACE(o.AccountNumber, ',', ''),
+            '', 
+            REPLACE(o.RoutingNumber, ',', ''),
+            'USABA',
+            'US',
+            '', 
+            REPLACE(o.NamePrefix, ',', ''),
+            '', 
+            REPLACE(o.NameSuffix, ',', ''),
+            REPLACE(o.FirstName, ',', ''),
+            REPLACE(o.MiddleName, ',', ''),
+            REPLACE(o.LastName, ',', ''),
+            REPLACE(o.BusinessName, ',', ''),
+            '', '', '', '', '', 
+            REPLACE(o.Addr1, ',', ''),
+            REPLACE(o.Addr2, ',', ''),
+            REPLACE(o.Addr3, ',', ''),
+            REPLACE(o.PostalCode, ',', ''),
+            REPLACE(o.City, ',', ''),
+            REPLACE(o.State, ',', ''),
+            REPLACE(o.Country, ',', ''),
+            '', 
+            REPLACE(o.WorkPhone, ',', ''),
+            REPLACE(o.HomePhone, ',', '')
+        ) + REPLICATE(',', 55)
+    FROM dbo.BoA_AV_Req_Outbox o
+    JOIN #Batch b ON b.OutboxID = o.OutboxID;
 
-        CLOSE vendor_cur;
-        DEALLOCATE vendor_cur;
+    ------------------------------------------------------------
+    -- 5) Finalize batch + Outbox
+    ------------------------------------------------------------
+    SELECT @RowsBuffered = COUNT(*) 
+    FROM dbo.BoA_AV_Req_ExportBuffer 
+    WHERE BatchId = @BatchId;
 
-        -- Step 02b (Premature Hash Commit) has been removed.
+    INSERT dbo.BoA_AV_Req_Batches (BatchId, FileName, RowsBuffered)
+    VALUES (@BatchId, @FileName, @RowsBuffered);
 
-        -------------------------------------------------
-        -- STEP 03: Clean + prepare request file
-        -------------------------------------------------
-        EXEC dbo.usp_BoA_AV_Req_S03_WriteRows 
-            @TestMode = @TestMode, 
-            @BatchId = @BatchId OUTPUT, 
-            @FileName = @FileName OUTPUT, 
-            @RowsBuffered = @RowsBuffered OUTPUT;
+    UPDATE o SET 
+        o.Status = 'ReadyForUpload',
+        o.FileName = @FileName,
+        o.LastUpdatedUtc = SYSUTCDATETIME()
+    FROM dbo.BoA_AV_Req_Outbox o
+    JOIN #Batch b ON b.OutboxID = o.OutboxID;
 
-        IF @BatchId IS NULL OR @RowsBuffered = 0 
-        BEGIN
-            COMMIT TRAN;
-            RETURN;
-        END
-
-        -------------------------------------------------
-        -- COMMIT TRANSACTION
-        -------------------------------------------------
-        -- Must commit before BCP in S04 to prevent deadlocks.
-        COMMIT TRAN;
-
-        -------------------------------------------------
-        -- STEP 04: Write file via BCP
-        -------------------------------------------------
-        EXEC dbo.usp_BoA_AV_Req_S04_WriteFile @BatchId = @BatchId;
-
-        -------------------------------------------------
-        -- STEP 05: Commit vendor hash state
-        -------------------------------------------------
-        -- Only updates if S04 succeeds without throwing.
-        MERGE dbo.BoA_AV_Req_VendorStaging AS tgt
-        USING @ChangedVendors AS src ON tgt.VendorId = src.VendorId
-        WHEN MATCHED THEN
-            UPDATE SET PayloadHash = src.PayloadHash, UpdateDateTime = SYSUTCDATETIME()
-        WHEN NOT MATCHED THEN
-            INSERT (VendorId, PayloadHash, UpdateDateTime) 
-            VALUES (src.VendorId, src.PayloadHash, SYSUTCDATETIME());
-
-    END TRY
-    BEGIN CATCH
-        -- Rollback if S02 or S03 fail. S04 failure won't rollback S02/S03, 
-        -- but prevents the Hash from updating, allowing clean retries.
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRAN;
-
-        INSERT dbo.BoA_AV_JobLog 
-        (
-            StepName, BatchId, FileName, Message, ErrorNumber, 
-            ErrorSeverity, ErrorState, ErrorLine, ErrorProc
-        )
-        VALUES 
-        (
-            'Req_RunVendorAccountVerification', @BatchId, @FileName, 
-            ERROR_MESSAGE(), ERROR_NUMBER(), ERROR_SEVERITY(), 
-            ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE()
-        );
-
-        THROW;
-    END CATCH
 END;
 GO
