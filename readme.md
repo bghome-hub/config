@@ -1,28 +1,29 @@
-$FSPaths = @{
-    POSTED = @{
+
+$FSPaths = [PSCustomObject]@{
+    POSTED = [PSCustomObject]@{
         Name   = 'Archive'
-        UNC    = $(Join-Path -Path $FSRoot -ChildPath 'Archive')
-        Mapped = $(Join-Path -Path $FSMappedRoot -ChildPath 'Archive')
+        UNC    = Join-Path $FSRoot 'Archive'
+        Mapped = Join-Path $FSMappedRoot 'Archive'
     }
-    PARTIAL = @{
+    PARTIAL = [PSCustomObject]@{
         Name   = 'Partial'
-        UNC    = $(Join-Path -Path $FSRoot -ChildPath 'Partial')
-        Mapped = $(Join-Path -Path $FSMappedRoot -ChildPath 'Partial')
+        UNC    = Join-Path $FSRoot 'Partial'
+        Mapped = Join-Path $FSMappedRoot 'Partial'
     }
-    ERROR = @{
+    ERROR = [PSCustomObject]@{
         Name   = 'Error'
-        UNC    = $(Join-Path -Path $FSRoot -ChildPath 'Error')
-        Mapped = $(Join-Path -Path $FSMappedRoot -ChildPath 'Error')
+        UNC    = Join-Path $FSRoot 'Error'
+        Mapped = Join-Path $FSMappedRoot 'Error'
     }
-    INCOMING = @{
+    INCOMING = [PSCustomObject]@{
         Name   = 'Incoming'
-        UNC    = $(Join-Path -Path $FSRoot -ChildPath 'Incoming')
-        Mapped = $(Join-Path -Path $FSMappedRoot -ChildPath 'Incoming')
+        UNC    = Join-Path $FSRoot 'Incoming'
+        Mapped = Join-Path $FSMappedRoot 'Incoming'
     }
-    PROCESSING = @{
+    PROCESSING = [PSCustomObject]@{
         Name   = 'Processing'
-        UNC    = $(Join-Path -Path $FSRoot -ChildPath 'Processing')
-        Mapped = $(Join-Path -Path $FSMappedRoot -ChildPath 'Processing')
+        UNC    = Join-Path $FSRoot 'Processing'
+        Mapped = Join-Path $FSMappedRoot 'Processing'
     }
 }
 
@@ -145,46 +146,45 @@ function Route-ProcessedFile {
         [Parameter(Mandatory)]
         [guid]$JobID
     )
-
     
-
     switch ($Status.ToUpperInvariant()) {
-        'POSTED'  { $BranchInfo = $FSPaths.POSTED }
-        'PARTIAL' { $BranchInfo = $FSPaths.PARTIAL }
-        default   { $BranchInfo = $FSPaths.ERROR }
+        'POSTED'  { $Branch = $FSPaths.POSTED  }
+        'PARTIAL' { $Branch = $FSPaths.PARTIAL }
+        default   { $Branch = $FSPaths.ERROR   }
     }
 
-    
-    if (-not $BranchInfo) {
+    if (-not $Branch.UNC) {
         throw "Branch resolution failed for status [$Status]"
     }
 
-
     $DateFolder  = Get-Date -Format 'yyyy-MM-dd'
     $ShortJobID  = $JobID.ToString().Substring(0,8)
-    $SubFolder   = Join-Path $DateFolder $ShortJobID
 
-    $TargetDir   = Join-Path -Path $($BranchInfo.UNC) -ChildPath $SubFolder
-    $MappedDir   = Join-Path -Path $($BranchInfo.Mapped) -ChildPath $SubFolder
+    $TargetDir = [System.IO.Path]::Combine($($Branch.UNC), $DateFolder, $ShortJobID)
+    $MappedDir = [System.IO.Path]::Combine($($Branch.Mapped), $DateFolder, $ShortJobID)
 
-
-    write-Log "TargetFolder: $TargetDir"
-    write-log "MappedDir: $MappedDir"
-
+    $TargetDir   = Join-Path $($Branch.UNC)    $DateFolder $ShortJobID
+    $MappedDir   = Join-Path $($Branch.Mapped) $DateFolder $ShortJobID
 
     
     if (-not $File) {
         throw "Route-ProcessedFile called with null File. Status=[$Status], JobID=[$JobID]"
     }
 
-    $moved = Move-File -Source $File.FullName -DestinationDir $targetDir
-
-
-
+    $moved = Move-File -Source $File.FullName -DestinationDir $TargetDir
 
     if ($null -ne $moved) {
         #$moved.IsReadOnly = $true
         Write-Log "File routed to: $targetDir based on status [$Status]"
+        
+        $ProcessedFile = [PSCustomObject]@{
+                            Name   = $File
+                            UNC    = $TargetDir
+                            Mapped = $MappedDir
+                        }
+
+        Return $ProcessedFile
+
     } else {
         Write-Log "ERROR: Failed to route file to $targetDir. File is stuck in the Proc folder."
     }
@@ -195,7 +195,7 @@ function New-DynamicsImportErrorEmail {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)][Guid]$JobId,
-        [Parameter(Mandatory=$true)][string]$FileName
+        [Parameter(Mandatory=$true)][PSCustomObject]$ProcessedFile
     )
     Write-Log "Generating Error HTML Body for JobID: $JobId"
     
@@ -205,7 +205,7 @@ function New-DynamicsImportErrorEmail {
 
     $HtmlTemplate = Get-Content $ITPaths.ErrorTemplate -Raw
     return $HtmlTemplate -replace '{{JobId}}', $JobId `
-                         -replace '{{FileName}}', $FileName `
+                         -replace '{{FileName}}', $($ProcessedFile.Name) `
                          -replace '{{RunDate}}', (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') `
                          -replace '{{ErrorMessage}}', $FatalError
 }
@@ -213,7 +213,8 @@ function New-DynamicsImportErrorEmail {
 function New-DynamicsImportSuccessEmail {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)][Guid]$JobId
+        [Parameter(Mandatory=$true)][Guid]$JobId,
+        [Parameter(Mandatory=$true)][PSCustomObject]$ProcessedFile
     )
     Write-Log "Generating Report HTML Body for JobID: $JobId"
     
@@ -281,6 +282,7 @@ function New-DynamicsImportSuccessEmail {
 
     $HtmlTemplate = Get-Content $ITPaths.SuccessTemplate -Raw
     return $HtmlTemplate -replace '{{JobId}}', $JobId `
+                         -replace '{{FileLocation}}', $($ProcessedFile.Mapped)
                          -replace '{{RunDate}}', (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') `
                          -replace '{{SummaryRows}}', $SummaryHtml `
                          -replace '{{DetailRows}}', $DetailHtml
@@ -332,37 +334,16 @@ function Invoke-Main {
     # Make sure all directories exist before any operation
     Ensure-Directory -Path (Split-Path $ITPaths.Log -Parent)
 
-
-
-    foreach ($branch in $FSPaths.Values) {
-
-        $uncPath = $branch['UNC']
-
-        if ([string]::IsNullOrWhiteSpace($uncPath)) {
-            throw "Branch [$($branch.Name)] is missing a valid UNC path"
-        }
-
-        Write-Log "Ensuring directory exists: $uncPath"
-        Ensure-Directory -Path $uncPath
+    Foreach($Property in $FSPaths.PSobject.Properties){
+        $CurrentFolder = $Property.Value
+        Ensure-Directory -Path $CurrentFolder.UNC
     }
 
-    $ITPaths.GetEnumerator() | ForEach-Object {
-        $val = $_.Value
-        $dir = if (Test-Path $val -PathType Container) { $val } else { Split-Path $val -Parent }
-        if ($dir) { Ensure-Directory -Path $dir }
-    }
-    
     # 1. Scan for files
-    $Incoming = $FSPaths.INCOMING
-
-    if (-not $Incoming -or -not $Incoming.UNC) {
-        throw "Incoming branch (INCOMING) is not configured correctly"
-    }
-
-    $files = @(Get-ChildItem -Path $Incoming.UNC -Filter '*.csv' -File  -ErrorAction SilentlyContinue)
+    $Files = Get-ChildItem -Path $FSPaths.INCOMING.UNC -Filter '*.csv' -File  -ErrorAction SilentlyContinue
 
     if ($files.Count -eq 0) {
-        Write-Log "No incoming CSV files found in $($Incoming.UNC)"
+        Write-Log "No incoming CSV files found in $($FSPaths.INCOMING.UNC)"
         return
     }
     
@@ -372,15 +353,9 @@ function Invoke-Main {
         Write-Log "Found file: $($file.Name)" -Module $Module
         
         # 1.5 Isolate the file to prevent locking/double-processing
-        $Processing = $FSPaths.PROCESSING
+        Write-Log "Moving file into processing directory: $($FSPaths.Processing.UNC)"
 
-        if (-not $Processing -or -not $Processing.UNC) {
-            throw "Processing branch (PROCESSING) is not configured correctly"
-        }
-
-        Write-Log "Moving file into processing directory: $($Processing.UNC)"
-
-        $working = Move-File -Source $file.FullName -DestinationDir $Processing.UNC
+        $working = Move-File -Source $file.FullName -DestinationDir $FSPaths.Processing.UNC
         if ($null -eq $working) {
                 Write-Log "Skipping: file locked/in use or failed to move. File: $($file.Name)" -Module $Module
             continue
@@ -401,31 +376,34 @@ function Invoke-Main {
                 Write-Log "Received Result: $JobResult" -Module $Module
 
                 Write-Log "Calling New-DynamicsImport. Determining which Email to Send" -Module $Module
-            # 5. Go to the function that creates the appropriate email
-            if ($jobResult -in 'POSTED', 'PARTIAL') {
-                Write-Log "Calling SuccessEmail for JobID: $JobID" -Module $Module
-                $emailBody = New-DynamicsImportSuccessEmail -JobId $jobId
-            } else {
-                Write-Log "Calling FailedEmail for JobID: $JobID" -Module $Module
-                $emailBody = New-DynamicsImportErrorEmail -JobId $jobId -FileName $working.Name
-            }
-                Write-Log "Email should be determined." -Module $Module
 
             # 6. Move file
                 Write-Log "Calling Route-ProcessedFile" -Module $Module
-            Route-ProcessedFile -File $working -Status $jobResult -JobID $jobId
+            $ProcessedFile = Route-ProcessedFile -File $working -Status $jobResult -JobID $jobId
+
+
+            # 5. Go to the function that creates the appropriate email
+            if ($jobResult -in 'POSTED', 'PARTIAL') {
+                Write-Log "Calling SuccessEmail for JobID: $JobID" -Module $Module
+                $emailBody = New-DynamicsImportSuccessEmail -JobId $jobId -ProcessedFile $ProcessedFile
+            } else {
+                Write-Log "Calling FailedEmail for JobID: $JobID" -Module $Module
+                $emailBody = New-DynamicsImportErrorEmail -JobId $jobId -ProcessedFile $ProcessedFile
+            }
+                Write-Log "Email should be determined." -Module $Module
+
 
             # 7. Send email
                 Write-Log "Calling Send-JobEmail" -Module $Module
-            $subject = "GP Import $($jobResult): $($working.Name)"
-            Send-JobEmail -Subject $subject -Body $emailBody
+            $subject = "GP Import $($jobResult): $($ProcessedFile.Name)"
+            Send-JobEmail -Subject $subject -Body $emailBody 
 
         } catch {
             Write-Log "Unhandled failure for $($file.Name): $($_.Exception.Message)" -Level "ERROR" -Module $Module
-            Route-ProcessedFile -File $working -Status "FAILED" -JobID ([Guid]::NewGuid())
+            $ProcessedFile = Route-ProcessedFile -File $($ProcessedFile.Name) -Status "FAILED" -JobID ([Guid]::NewGuid())
             
             # Fallback email if the pipeline completely explodes
-            $emailBody = New-DynamicsImportErrorEmail -JobId ([Guid]::Empty) -FileName $working.Name
+            $emailBody = New-DynamicsImportErrorEmail -JobId ([Guid]::Empty) -FileName $ProcessedFile
             
             Send-JobEmail -Subject "GP Import CRASHED: $($working.Name) - Are the procedures compiled?" -Body $emailBody
         }
