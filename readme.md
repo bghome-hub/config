@@ -1,29 +1,26 @@
-function Route-ProcessedFile {
-    param(
-        [Parameter(Mandatory)][System.IO.FileInfo]$File,
-        [Parameter(Mandatory)][string]$Status,
-        [Parameter(Mandatory)][guid]$JobId
-    )
+# ... inside the foreach ($File in $Files) loop ...
 
-    $BranchInfo = switch ($Status.ToUpper()) {
-        'POSTED'  { $FSPaths.POSTED }
-        'PARTIAL' { $FSPaths.PARTIAL }
-        default   { $FSPaths.ERROR }
-    }
+try {
+    $JobId = Invoke-IntracompanyImportSP -CsvFullPath $WorkingFile.FullName
+    if ($null -eq $JobId -or $JobId -eq "No JobID returned") { throw "SQL Import failed." }
 
-    $SubFolder  = Join-Path (Get-Date -Format 'yyyy-MM-dd') ($JobId.ToString().Substring(0,8))
-    $TargetDir  = Join-Path $BranchInfo.UNC $SubFolder
-    $MappedDir  = Join-Path $BranchInfo.Mapped $SubFolder # This is the user-friendly path
+    $JobStatus = Get-JobResult -JobId $JobId
     
-    # Perform the move
-    $MovedFile = Move-File -Source $File.FullName -DestinationDir $TargetDir
+    # 1. Route the file FIRST to get the final path
+    $RoutingResult = Route-ProcessedFile -File $WorkingFile -Status $JobStatus -JobId $JobId
+    $UserPath = if ($null -ne $RoutingResult) { $RoutingResult.MappedPath } else { "Unknown (Move Failed)" }
 
-    if ($null -ne $MovedFile) {
-        # Return an object so the main loop has the Mapped Path for the email
-        return [PSCustomObject]@{
-            File       = $MovedFile
-            MappedPath = Join-Path $MappedDir $MovedFile.Name
-        }
+    # 2. Pass that path into your email functions
+    if ($JobStatus -in @('POSTED', 'PARTIAL')) {
+        # Update your Success email function to accept -MappedPath
+        $EmailBody = New-DynamicsImportSuccessEmail -JobId $JobId -MappedPath $UserPath
+    } else {
+        # Update your Error email function to accept -MappedPath
+        $EmailBody = New-DynamicsImportErrorEmail -JobId $JobId -FileName $WorkingFile.Name -MappedPath $UserPath
     }
-    return $null
+
+    Send-JobEmail -Subject "GP Import $JobStatus: $($WorkingFile.Name)" -Body $EmailBody
+}
+catch {
+    # Fallback error handling...
 }
