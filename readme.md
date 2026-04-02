@@ -1,13 +1,96 @@
+
+<# 
+    The following must be executed on the server in ADMIN PS Window
+    Install-Module -Name SqlServer -Scope AllUsers -Force -AllowClobber
+    Update-Module -Name SqlServer
+#>
+
+<#
+
+    SQL Agent Parameter
+      - powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\\trsgafs\data$\Home\bgregory\shared\dynamics_intracompany\powershell\Process-Intracompany.ps1"
+
+#>
+
+
+$SQLConfig = @{
+    # Preprod
+    Server   = "vpreprodmdstp"
+    # Prod
+    # Server = vprodmdtp
+    Database = "DYNAMICS"
+    MainSP   = "dbo.usp_IC_ProcessCsv"
+    ReportSP = "dbo.usp_IC_ReportJobReconciliation"
+}
+
+# Uncomment for PROD
+<#
+$SQLConfig = @{
+    
+    Server   = "vprodtp"
+    Database = "DYNAMICS"
+    MainSP   = "dbo.usp_IC_ProcessCsv"
+    ReportSP = "dbo.usp_IC_ReportJobReconciliation"
+}
+#>
+
+$EmailConfig = @{
+    Server = "trsmail.trsga.com"
+    From   = "JEImport@trsga.com"
+    To     = @("ben.gregory@trsga.com") 
+    Bcc    = @("dba@trsga.com")
+}
+
+<# 
+
+    Script Directories
+    - local   -"\\trsgafs\data`$\Home\bgregory\shared\dynamics_intracompany"
+    - network - "\\trsgafs\data`$\TRSGA\automation_scripts\dynamics_intracompany"
+
+#>
+
+# For Testing
+#$ITDir  = "\\trsgafs\data`$\Home\bgregory\shared\dynamics_intracompany"
+
+# For Preprod
+$ITDir = "\\trsgafs\data`$\TRSGA\automation_scripts\dynamics_intracompany\preprod"
+
+#For Production
+#$ITDir = "\\trsgafs\data`$\TRSGA\automation_scripts\dynamics_intracompany\prod"
+
+
+
+$FSDir  = "\\trsgafs\data`$\Divisions\FinancialServices\JEImport"
+
+$ITPaths = @{
+    BaseITDir       = $ITDir
+    SuccessTemplate = Join-Path $ITDir 'html\success_template.html'
+    ErrorTemplate   = Join-Path $ITDir 'html\error_template.html'
+    Log             = Join-Path $ITDir 'log\log.txt'
+}
+
+
+$FSPaths = @{
+    BaseFSDir = $FSDir
+    In        = Join-Path $FSDir 'Incoming'
+    Proc      = Join-Path $FSDir 'Processing'
+    Archive   = Join-Path $FSDir 'Archive'
+    Err       = Join-Path $FSDir 'Error'
+    Partial   = Join-Path $FSDir 'Partial'
+}
+
+$FSRoot = '\\trsgafs\data$\Divisions\FinancialServices\JEImport'
+$FSMappedRoot = 'G:\JEImport'
 # ----------------------------
 # CONFIGURATION & PATHS
 # ----------------------------
 # Note: Ensure $FSRoot and $FSMappedRoot are defined before this block.
 $FSPaths = [PSCustomObject]@{
-    POSTED     = [PSCustomObject]@{ Name = 'Archive';    UNC = Join-Path $FSRoot 'Archive';    Mapped = Join-Path $FSMappedRoot 'Archive' }
-    PARTIAL    = [PSCustomObject]@{ Name = 'Partial';    UNC = Join-Path $FSRoot 'Partial';    Mapped = Join-Path $FSMappedRoot 'Partial' }
-    ERROR      = [PSCustomObject]@{ Name = 'Error';      UNC = Join-Path $FSRoot 'Error';      Mapped = Join-Path $FSMappedRoot 'Error' }
-    INCOMING   = [PSCustomObject]@{ Name = 'Incoming';   UNC = Join-Path $FSRoot 'Incoming';   Mapped = Join-Path $FSMappedRoot 'Incoming' }
-    PROCESSING = [PSCustomObject]@{ Name = 'Processing'; UNC = Join-Path $FSRoot 'Processing'; Mapped = Join-Path $FSMappedRoot 'Processing' }
+    POSTED     = [PSCustomObject]@{ Name = 'Archive';    UNC = Join-Path $FSRoot 'Archive';    Mapped = '$FSMappedRoot\Archive' }
+    PARTIAL    = [PSCustomObject]@{ Name = 'Partial';    UNC = Join-Path $FSRoot 'Partial';    Mapped = '$FSMappedRoot\Partial' }
+    ERROR      = [PSCustomObject]@{ Name = 'Error';      UNC = Join-Path $FSRoot 'Error';      Mapped = '$FSMappedRoot\Error' }
+    INCOMING   = [PSCustomObject]@{ Name = 'Incoming';   UNC = Join-Path $FSRoot 'Incoming';   Mapped = '$FSMappedRoot\Incoming' }
+    PROCESSING = [PSCustomObject]@{ Name = 'Processing'; UNC = Join-Path $FSRoot 'Processing'; Mapped = '$FSMappedRoot\Processing' }
 }
 
 # ----------------------------
@@ -17,39 +100,15 @@ $FSPaths = [PSCustomObject]@{
 function Ensure-Directory {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (-not (Test-Path -Path $Path)) {
-        # Removed .ToLower() - Keep casing as defined in config for compatibility/readability
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
-    }
-}
-
-function Write-Log {
-    param(
-        [Parameter(Mandatory=$true)][string]$Message,
-        [switch]$IncludeHeader,
-        [switch]$IncludeFooter,
-        [ValidateSet("INFO", "WARN", "ERROR")][string]$Level = "INFO",
-        [string]$Module = "System"
-    )
-
-    $TimeStamp = Get-Date -Format "yyyyMMdd HH:mm:ss"
-    
-    if($IncludeHeader){
-        $LogEntry = "$TimeStamp | User: $env:USERNAME | Host: $env:COMPUTERNAME`n$TimeStamp | $Message"
-    } else {
-        $LogEntry = "$TimeStamp | $Level | $Module`: $Message"
+        New-Item -ItemType Directory -Path $($Path).ToLower() -Force | Out-Null
     }
 
-    if($IncludeFooter){ $LogEntry += "`n" }
-
-    # Ensure log directory exists before writing
-    Ensure-Directory -Path (Split-Path $ITPaths.Log -Parent)
-    Add-Content -Path $ITPaths.Log -Value $LogEntry
 }
-
-function Send-JobEmail {
+function Send-JobEmail{
     param(
-        [Parameter(Mandatory=$true)][string]$Subject,
-        [Parameter(Mandatory=$true)][string]$Body
+        [Parameter(Mandatory=$true)][String]$Subject,
+        [Parameter(Mandatory=$true)][String]$Body
+
     )
     
     $EmailParams = @{
@@ -60,30 +119,56 @@ function Send-JobEmail {
         Subject    = $Subject
         Body       = $Body
         BodyAsHTML = $true
-        ErrorAction = 'Stop'
     }
 
-    try {
-        Send-MailMessage @EmailParams
-    } catch {
-        Write-Log "Failed to send email: $($_.Exception.Message)" -Level "ERROR"
-    }
+    Send-MailMessage @EmailParams
 }
 
-# ----------------------------
-# DATA & PROCESSING
-# ----------------------------
+function Get-JobResult{
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][Guid]$JobId
+    )
 
-function Get-JobResult {
-    param([Parameter(Mandatory)][guid]$JobId)
-
-    $Query = "SELECT JobStatus FROM dbo.IC_ImportJob WHERE JobID = '$($JobId.ToString())'"
+    $Query = "SELECT JobStatus FROM dbo.IC_ImportJob WHERE JobID= '$JobID'"
     $QueryResult = Invoke-Sqlcmd -ServerInstance $SQLConfig.Server -Database $SQLConfig.Database -Query $Query -TrustServerCertificate
 
-    if ($null -eq $QueryResult) { return "NOT_FOUND" }
-    return $QueryResult.JobStatus.ToString().Trim().ToUpper()
+    $JobStatus = $($QueryResult.JobStatus).ToString().Trim().ToUpper()
+
+    return $JobStatus
+
 }
 
+function Write-Log{
+    param(
+        [Parameter(Mandatory=$true)]
+        [String]$Message,
+        [switch]$IncludeHeader,
+        [switch]$IncludeFooter,
+        [ValidateSet("INFO", "WARN", "ERROR")][string]$Level = "INFO",
+        [string]$Module
+    )
+
+    $TimeStamp = Get-Date -Format "yyyyMMdd HH:mm:ss"
+    
+    if($IncludeHeader){
+        # Log Username, Clustername, NodeName
+        $User = $env:USERNAME
+        $Hostname = $env:COMPUTERNAME
+        $Node = [System.Environment]::MachineName
+        $LogEntry = "$TimeStamp | User: $User | Hostname: $Hostname | Node: $Node `n$Timestamp | $Message"
+    } else {
+        # Log Message Only
+        $LogEntry = "$TimeStamp | $Level | $Module`: $Message"
+    }
+
+    # Add linebreak
+    if($IncludeFooter){
+        $LogEntry += "`n"
+    }
+
+    Add-Content -Path $ITPaths.Log -Value $LogEntry
+}
 function Move-File {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -91,57 +176,159 @@ function Move-File {
     )
     
     Ensure-Directory -Path $DestinationDir
-    $FileName = Split-Path -Path $Source -Leaf
-    $TargetFile = Join-Path -Path $DestinationDir -ChildPath $FileName
+    $target = Join-Path -Path $DestinationDir -ChildPath (Split-Path -Path $Source -Leaf)
     
     $retryCount = 0
     while ($retryCount -lt 3) {
         try {
-            # Use -PassThru to return the file object for the next step
-            return Move-Item -Path $Source -Destination $TargetFile -PassThru -Force -ErrorAction Stop
+            return Move-Item -Path $Source -Destination $target -PassThru -Force -ErrorAction Stop
         }
         catch {
             $retryCount++
-            Write-Log "Move attempt $retryCount failed for [$FileName]. Retrying..." -Level "WARN"
+            Write-Log "Move attempt $retryCount failed for [$Source]. File may be locked. Retrying in 2 seconds..."
             Start-Sleep -Seconds 2
         }
     }
     
-    Write-Log "FATAL: Could not move [$FileName] to [$DestinationDir] after 3 attempts." -Level "ERROR"
-    Send-JobEmail -Subject "File System Error: $FileName" -Body "Could not move file to $DestinationDir. Check permissions or locks."
+    Write-Log "FATAL: Could not move file [$Source] to [$DestinationDir] after 3 attempts. Ensure the file is not open in Excel."
+        $Subject = "GP Import Error: $($Source)"
+        $Body = "Failed to process file: Could not move file [ $($Source)] to [$($DestinationDir)] after 3 attempts. Ensure the file is not open in Excel."
+        Send-JobEmail -Subject $Subject -Body $Body
+
     return $null 
 }
 
 function Route-ProcessedFile {
+    [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][System.IO.FileInfo]$File,
-        [Parameter(Mandatory)][string]$Status,
-        [Parameter(Mandatory)][guid]$JobId
+        [Parameter(Mandatory=$true)][System.IO.FileInfo]$File,
+        [Parameter(Mandatory=$true)][string]$Status
     )
-
-    $BranchInfo = switch ($Status.ToUpper()) {
-        'POSTED'  { $FSPaths.POSTED }
-        'PARTIAL' { $FSPaths.PARTIAL }
-        default   { $FSPaths.ERROR }
-    }
-
-    $SubFolder  = Join-Path (Get-Date -Format 'yyyy-MM-dd') ($JobId.ToString().Substring(0,8))
-    $TargetDir  = Join-Path $BranchInfo.UNC $SubFolder
-    $MappedDir  = Join-Path $BranchInfo.Mapped $SubFolder # This is the user-friendly path
     
-    # Perform the move
-    $MovedFile = Move-File -Source $File.FullName -DestinationDir $TargetDir
-
-    if ($null -ne $MovedFile) {
-        # Return an object so the main loop has the Mapped Path for the email
-        return [PSCustomObject]@{
-            File       = $MovedFile
-            UNCPath    = join-path $TargetDir $MovedFile.Name
-            MappedPath = Join-Path $MappedDir $MovedFile.Name
-        }
+    switch ($Status.ToUpperInvariant()) {
+        'POSTED'  {$targetDir  = $FSPaths.POSTED  }
+        'PARTIAL' {$targetDir  = $FSPaths.PARTIAL }
+        default   {$targetDir  = $FSPaths.ERROR   }
     }
-    return $null
+
+    $moved = Move-File -Source $File.FullName -DestinationDir $targetDir.UNC
+    
+    if ($null -ne $moved) {
+        Write-Log "File routed to: $targetDir based on status [$Status]"
+        $ProcessedFile = [PSCustomObject]@{
+            Name      = $File.BaseName
+            Folder    = $targetDir.Name
+            TargetDir = $targetDir.UNC
+            MappedDir = $targetDir.Mapped
+
+        }
+        return $ProcessedFile
+
+    } else {
+        Write-Log "ERROR: Failed to route file to $targetDir. File is stuck in the Proc folder."
+    }
 }
+
+
+function New-DynamicsImportErrorEmail {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][Guid]$JobId,
+        [Parameter(Mandatory=$true)][string]$FileName,
+        [Parameter(Mandatory=$true)]$ProcessedFile
+    )
+    Write-Log "Generating Error HTML Body for JobID: $JobId"
+    
+    $Query = "SELECT TOP 1 LogMessage FROM dbo.IC_SystemLog WHERE JobId = '$JobId' AND LogLevel IN ('FATAL', 'ERROR') ORDER BY LogId ASC"
+    $SqlResult = Invoke-Sqlcmd -ServerInstance $SQLConfig.Server -Database $SQLConfig.Database -Query $Query -TrustServerCertificate
+    $FatalError = if ($null -ne $SqlResult) { $SqlResult.LogMessage } else { "Unknown fatal error occurred. Check system logs." }
+
+    $HtmlTemplate = Get-Content $ITPaths.ErrorTemplate -Raw
+    return $HtmlTemplate -replace '{{JobId}}', $JobId `
+                         -replace '{{FileName}}', $FileName `
+                         -replace '{{RunDate}}', (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') `
+                         -replace '{{ErrorMessage}}', $FatalError
+}
+
+function New-DynamicsImportSuccessEmail {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][Guid]$JobId,
+        [Parameter(Mandatory=$True)]$ProcessedFile
+    )
+    Write-Log "Generating Report HTML Body for JobID: $JobId"
+    
+    $Query = "EXEC $($SQLConfig.ReportSP) @JobId = '$JobId'"
+    $Details = Invoke-Sqlcmd -ServerInstance $SQLConfig.Server -Database $SQLConfig.Database -Query $Query -TrustServerCertificate
+
+    # Build Summary Rows
+    $SummaryGroups = $Details | Group-Object Company, gp_BatchNumber, gp_Status
+    $SummaryHtml = ""
+    foreach ($Group in $SummaryGroups) {
+    $FirstRow = $Group.Group[0]
+    $CleanStatus = if ($null -ne $FirstRow.gp_Status) { $FirstRow.gp_Status.ToString().Trim().ToUpper() } else { "UNKNOWN" }
+    $StatusClass = switch ($CleanStatus) { 'POSTED' {'status-ok'} 'UNPOSTED' {'status-pending'} default {'status-fail'} }
+
+    # The Indicator: Shows 'Y (MM/DD/YY)' if reversal, or 'N' if not [cite: 153, 155]
+    $RevIndicator = if ($FirstRow.Reversal -eq 'Y') { 
+        "Y ($($FirstRow.ReversalDate.ToString('MM/dd/yy')))" 
+    } else { 
+        "N" 
+    }
+
+    $SummaryHtml += "<tr> 
+        <td>$($FirstRow.Company)</td> 
+        <td>$($FirstRow.gp_BatchNumber)</td> 
+        <td class='center'>$RevIndicator</td> 
+        <td class='center'><span class='$StatusClass'>$CleanStatus</span></td> 
+        <td class='right'>$($Group.Count)</td> 
+    </tr>`n"
+}
+
+    # Build Detail Rows
+    $DetailHtml = ""
+    $GroupedDetails = $Details | Group-Object Company
+    foreach ($CompGroup in $GroupedDetails) {
+        $DetailHtml += "<tr class='company-header'><td colspan='9'>Company: $($CompGroup.Name)</td></tr>`n"
+        $SubUpDeb = 0; $SubUpCred = 0; $SubGpDeb = 0; $SubGpCred = 0; $SubVar = 0
+
+        foreach ($Row in $CompGroup.Group) {
+            $SubUpDeb += $Row.Uploaded_Debit; $SubUpCred += $Row.Uploaded_Credit
+            $SubGpDeb += $Row.gp_DebitAmount; $SubGpCred += $Row.gp_CreditAmount; $SubVar += $Row.Net_Variance
+
+            $CleanRowStatus = if ($null -ne $Row.gp_Status) { $Row.gp_Status.ToString().Trim().ToUpper() } else { "UNKNOWN" }
+            $StatusClass = switch ($CleanRowStatus) { 'POSTED' {'status-ok'} 'UNPOSTED' {'status-pending'} default {'status-fail'} }
+            $VarClass = if ($Row.Net_Variance -ne 0) { "variance-bad right" } else { "variance-good right" }
+
+            $DetailHtml += "<tr> <td>$($Row.Company)</td> `
+                                 <td>$($Row.gp_BatchNumber) / JE: $($Row.gp_Journal)</td> `
+                                 <td>$($Row.Account)</td> `
+                                 <td class='right'>$("{0:N2}" -f $Row.Uploaded_Debit)</td> `
+                                 <td class='right'>$("{0:N2}" -f $Row.Uploaded_Credit)</td> `
+                                 <td class='right'>$("{0:N2}" -f $Row.gp_DebitAmount)</td> `
+                                 <td class='right'>$("{0:N2}" -f $Row.gp_CreditAmount)</td> `
+                                 <td class='$VarClass'>$("{0:N2}" -f $Row.Net_Variance)</td> `
+                                 <td class='center'><span class='$StatusClass'>$CleanRowStatus</span></td> `
+                            </tr>`n"
+        }
+        $DetailHtml +=      "<tr class='subtotal-row'> <td colspan='3' class='right'>$($CompGroup.Name) Totals:</td> `
+                                <td class='right'>$("{0:N2}" -f $SubUpDeb)</td> `
+                                <td class='right'>$("{0:N2}" -f $SubUpCred)</td> `
+                                <td class='right'>$("{0:N2}" -f $SubGpDeb)</td> `
+                                <td class='right'>$("{0:N2}" -f $SubGpCred)</td> `
+                                <td class='right'>$("{0:N2}" -f $SubVar)</td> <td></td> `
+                                </tr>`n"
+    }
+
+    $HtmlTemplate = Get-Content $ITPaths.SuccessTemplate -Raw
+    return $HtmlTemplate -replace '{{JobId}}', $JobId `
+                         -replace '{{MappedDir}}', $($ProcessedFile.MappedDir) `
+                         -replace '{{RunDate}}', (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') `
+                         -replace '{{SummaryRows}}', $SummaryHtml `
+                         -replace '{{DetailRows}}', $DetailHtml
+}
+
+
 
 function Invoke-IntracompanyImportSP {
     param([Parameter(Mandatory = $true)][string]$CsvFullPath)
@@ -179,67 +366,85 @@ function Invoke-IntracompanyImportSP {
     }
 }
 
-
-# ----------------------------
-# MAIN EXECUTION
-# ----------------------------
-
 function Invoke-Main {
-    $Module = "Main"
-    Write-Log "Starting Import Cycle" -IncludeHeader -Module $Module
 
-    # 1. Validation & Setup
-    foreach ($Prop in $FSPaths.PSObject.Properties) {
-        Ensure-Directory -Path $Prop.Value.UNC
+    # Module Definition
+    $Module = "Invoke-Main"
+
+    # Make sure all directories exist before any operation
+    Ensure-Directory -Path (Split-Path $ITPaths.Log -Parent)
+
+    Foreach($Property in $FSPaths.PSobject.Properties){
+
+        $CurrentFolder = $Property.Value
+        Ensure-Directory -Path $CurrentFolder.UNC
+
     }
 
-    # 2. Scan Incoming
-    $Files = @(Get-ChildItem -Path $FSPaths.INCOMING.UNC -Filter '*.csv' -File -ErrorAction SilentlyContinue)
-    if ($Files.Count -eq 0) {
-        Write-Log "No files found in Incoming." -Module $Module
-        return
-    }
 
-    foreach ($File in $Files) {
-        Write-Log "Processing: $($File.Name)" -Module $Module
+    # 1. Scan for files
+    $Files = Get-ChildItem -Path $FSPaths.INCOMING.UNC -Filter '*.csv' -File  -ErrorAction SilentlyContinue
+    if ($files.Count -eq 0) { return }
+    
+    Write-Log "Files(s) found. Move each to Processing folder and begin import." -Module $Module
+
+    foreach ($file in $files) {
+        Write-Log "Found file: $($file.Name)" -Module $Module
         
-        # 3. Move to Processing (Isolate)
-        $WorkingFile = Move-File -Source $File.FullName -DestinationDir $FSPaths.PROCESSING.UNC
-        if ($null -eq $WorkingFile) { continue }
-
+        # 1.5 Isolate the file to prevent locking/double-processing
+        $working = Move-File -Source $file.FullName -DestinationDir $FSPaths.PROCESSING.UNC
+        if ($null -eq $working) {
+                Write-Log "Skipping: file locked/in use or failed to move. File: $($file.Name)" -Module $Module
+            continue
+        }
         try {
-            $JobId = Invoke-IntracompanyImportSP -CsvFullPath $WorkingFile.FullName
-            if ($null -eq $JobId -or $JobId -eq "No JobID returned") { throw "SQL Import failed." }
-
-            $JobStatus = Get-JobResult -JobId $JobId
+                Write-Log "Starting SQL import for: $($working.FullName)" -Module $Module
             
-            # 1. Route the file FIRST to get the final path
-            $RoutingResult = Route-ProcessedFile -File $WorkingFile -Status $JobStatus -JobId $JobId
-            $UserPath = if ($null -ne $RoutingResult) { $RoutingResult.MappedPath } else { "Unknown (Move Failed)" }
+            # 2 & 3. Run the file and get the Job ID back
+                Write-Log "Calling Invoke-IntracompanyImport for $working.FullName" -Module $Module
+            $jobId = Invoke-IntracompanyImportSP -CsvFullPath $working.FullName
+            if (-not $jobId) { throw "No JobID returned from SQL." }
+                Write-Log "Received JobID: $JobID" -Module $Module
 
-            # 2. Pass that path into your email functions
-            if ($JobStatus -in @('POSTED', 'PARTIAL')) {
-                # Update your Success email function to accept -MappedPath
-                $EmailBody = New-DynamicsImportSuccessEmail -JobId $JobId -MappedPath $UserPath
+            # 4. Check if it ran success/partial/fail
+                Write-Log "Calling Get-JobResult for $JobID" -Module $Module
+            $jobResult = Get-JobResult -JobID $jobId
+            if (-not $jobResult) { $jobResult = "FAILED" }
+                Write-Log "Received Result: $JobResult" -Module $Module
+
+            # 5. Move file
+                Write-Log "Calling Route-ProcessedFile" -Module $Module
+            $ProesssedFile = Route-ProcessedFile -File $working -Status $jobResult
+                Write-Log "Calling New-DynamicsImport. Determining which Email to Send" -Module $Module
+            
+            # 6. Go to the function that creates the appropriate email
+            if ($jobResult -in 'POSTED', 'PARTIAL') {
+                Write-Log "Calling SuccessEmail for JobID: $JobID" -Module $Module
+                $emailBody = New-DynamicsImportSuccessEmail -JobId $jobId -ProcessedFile $ProcessedFile
             } else {
-                # Update your Error email function to accept -MappedPath
-                $EmailBody = New-DynamicsImportErrorEmail -JobId $JobId -FileName $WorkingFile.Name -MappedPath $UserPath
+                Write-Log "Calling FailedEmail for JobID: $JobID" -Module $Module
+                $emailBody = New-DynamicsImportErrorEmail -JobId $jobId -FileName $working.Name -ProcessedFile $ProcessedFile
             }
+                Write-Log "Email should be determined." -Module $Module
 
-            Send-JobEmail -Subject "GP Import $JobStatus`: $($WorkingFile.Name)" -Body $EmailBody
+
+            # 7. Send email
+                Write-Log "Calling Send-JobEmail" -Module $Module
+            $subject = "GP Import $($jobResult): $($working.Name)"
+            Send-JobEmail -Subject $subject -Body $emailBody
+
         } catch {
-            $ErrorMessage = $_.Exception.Message
-            Write-Log "CRITICAL ERROR processing $($File.Name): $ErrorMessage" -Level "ERROR" -Module $Module
+            Write-Log "Unhandled failure for $($file.Name): $($_.Exception.Message)" -Level "ERROR" -Module $Module
+            Route-ProcessedFile -File $working -Status "FAILED"
             
-            # Ensure file doesn't sit in Processing forever on crash
-            Route-ProcessedFile -File $WorkingFile -Status "ERROR" -JobId ([guid]::Empty)
+            # Fallback email if the pipeline completely explodes
+            $emailBody = New-DynamicsImportErrorEmail -JobId ([Guid]::Empty) -FileName $working.Name -ProcessedFile $ProcessedFile
             
-            $ErrBody = "The process crashed while handling $($File.Name).<br>Error: $ErrorMessage"
-            Send-JobEmail -Subject "GP Import CRASHED: $($File.Name)" -Body $ErrBody
+            Send-JobEmail -Subject "GP Import CRASHED: $($working.Name)" -Body $emailBody
         }
     }
-    Write-Log "Import Cycle Complete" -IncludeFooter -Module $Module
+    
+    Write-Log "-- Import End --" -IncludeFooter -Module $Module
 }
 
-# Run the script
 Invoke-Main
